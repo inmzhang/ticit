@@ -385,6 +385,7 @@ pub struct UniformImagRunStep {
 /// One step of the five-rotation diagonal run used by the distillation
 /// circuit. Parity signs are resolved once per run instead of once per shot.
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub struct DiagonalRunStep {
     cos: f64,
     coefficient_re: f64,
