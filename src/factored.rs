@@ -15,7 +15,7 @@
 //!
 //! # Active and dormant qubits
 //!
-//! Qubits `[0, k)` are *active*: they have real amplitudes in a dense `2^k`
+//! Qubits `[0, k)` are *active*: they have real amplitudes in a dense $2^k$
 //! vector. Qubits `[k, n)` are *dormant*: still `|0>` up to the tableau, holding
 //! only a classical bit. `k` moves during planning — a rotation that touches a
 //! dormant qubit promotes it, and a measurement of an active Pauli retires one.

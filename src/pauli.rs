@@ -9,7 +9,7 @@
 //!
 //! # Phase convention
 //!
-//! The represented operator is `i^phase * prod_q (X_q^x_q Z_q^z_q)`. A `Y`
+//! The represented operator is $i^{\mathrm{phase}} \prod\_q X\_q^{x\_q} Z\_q^{z\_q}$. A `Y`
 //! therefore carries an implicit `i` in its body, which the stored phase
 //! cancels: `pauli_y` stores `x=1, z=1, phase=1`. Everything that reports a
 //! "coefficient" phase (`Display`, [`measurement_phase_sign`],

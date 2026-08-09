@@ -1,15 +1,15 @@
 //! Destabilizer-coset labels and the word masks the frame math runs against.
 //!
-//! A label `c ∈ {0,1}^n` indexes a term `D^c|ψ0⟩` of the stabilizer frame (see
+//! A label $c \in \{0,1\}^n$ indexes a term $D^c\lvert\psi\_0\rangle$ of the stabilizer frame (see
 //! [`crate::tableau_simulator::TableauSimulator`]). Equivalently it is a computational-basis
-//! index of the rotated state `|χ⟩ = R†|ψ⟩`. Physical circuits reach hundreds
+//! index of the rotated state $\lvert\chi\rangle = R^\dagger\lvert\psi\rangle$. Physical circuits reach hundreds
 //! of qubits, so labels are packed `u64` word vectors.
 //!
 //! The hot inner loops (`T` and measurement) touch every label with the coset
-//! shift `c ⊕ a` and the sign parity `⟨b,c⟩`. Both `a` and `b` are stored as
+//! shift $c \oplus a$ and the sign parity $\langle b,c\rangle$. Both $a$ and $b$ are stored as
 //! labels of the same width so those become whole-word operations
-//! (`O(⌈n/64⌉)`) instead of per-set-bit index work — the difference between
-//! ~8 and ~250 operations per term at `n = 500`.
+//! ($O(\lceil n/64\rceil)$) instead of per-set-bit index work — the difference
+//! between ~8 and ~250 operations per term at $n = 500$.
 //!
 //! # Why the width is a type
 //!
@@ -19,11 +19,11 @@
 //! a 72-byte key that made a rank-4096 map four times larger than the data it
 //! carried.
 //!
-//! So the width becomes a type parameter. [`Key<W>`] is `W` words of inline,
-//! `Copy` storage; a register of `⌈n/64⌉` words is rounded up to the next
-//! supported `W ∈ {1, 2, 4, 8}` and the padding words are held at zero.
+//! So the width becomes a type parameter. [`Key<W>`] is $W$ words of inline,
+//! `Copy` storage; a register of $\lceil n/64\rceil$ words is rounded up to the next
+//! supported $W \in \{1, 2, 4, 8\}$ and the padding words are held at zero.
 //! Padding is transparent because every operation here is bitwise or a parity,
-//! for which a zero word is the identity — and in exchange `n = 128` runs on a
+//! for which a zero word is the identity — and in exchange $n = 128$ runs on a
 //! 16-byte key with a two-iteration loop the compiler unrolls flat. Registers
 //! past 512 qubits fall back to [`Label`], the heap-allocated runtime-width
 //! label, which keeps the specialization table finite.

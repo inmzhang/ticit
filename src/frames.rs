@@ -3,8 +3,8 @@
 //! Two independent "frames" live here:
 //!
 //! * [`CliffordFrame`] — the deterministic Clifford `U` absorbed so far, stored
-//!   as the images `U† X_q U` (rows `0..n`) and `U† Z_q U` (rows `n..2n`).
-//!   [`preimage`] therefore returns `U† P U`, the forward tableau of the
+//!   as the images $U^\dagger X\_q U$ (rows `0..n`) and $U^\dagger Z\_q U$
+//!   (rows `n..2n`). [`preimage`] therefore returns $U^\dagger P U$, the forward tableau of the
 //!   inverse gate.
 //! * [`ActivePauliFrame`] — a list of Pauli corrections, each gated on a
 //!   condition symbol, that have been pushed past the Clifford. Conjugating a

@@ -3,7 +3,7 @@
 //!
 //! # The idea
 //!
-//! A dense `2^k` amplitude vector is wasteful when the active qubits are not
+//! A dense $2^k$ amplitude vector is wasteful when the active qubits are not
 //! actually entangled with each other. This pass simulates *connectivity* only:
 //! it walks the planned instruction stream tracking which coordinates have been
 //! linked by some operation, keeps each connected group as its own small vector,
@@ -16,9 +16,9 @@
 //!
 //! # Cost model
 //!
-//! Dense work is `2^k` per rotation and `2 * 2^k` per promotion or measurement.
-//! Component work is the merges it has to perform (`2 * 2^merged_k` each) plus
-//! `2^component_k` for the operation itself plus a fixed dispatch charge. Four
+//! Dense work is $2^k$ per rotation and $2 \cdot 2^k$ per promotion or measurement.
+//! Component work is the merges it has to perform ($2 \cdot 2^{k\_\mathrm{merged}}$
+//! each) plus $2^{k\_\mathrm{component}}$ for the operation itself plus a fixed dispatch charge. Four
 //! gates then have to pass before [`ActiveComponentPlan::selected`] is set: a
 //! wide enough active state, enough quantum instructions, a large absolute
 //! *and* relative saving, and a cap on the extra allocation.

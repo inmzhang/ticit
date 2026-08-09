@@ -4,7 +4,7 @@
 //! # Layout
 //!
 //! State is a structure of arrays — `re[basis]` and `im[basis]` in two separate
-//! `f64` slices, both of length `2^k`. This is what lets a vectorized backend
+//! `f64` slices, both of length $2^k$. This is what lets a vectorized backend
 //! load four or eight consecutive amplitudes without deinterleaving.
 //!
 //! # Evaluation order is part of the contract

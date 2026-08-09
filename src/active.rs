@@ -12,7 +12,7 @@
 //!
 //! Both precomputed kernels are O(1)-sized: per-basis coefficients are *derived*
 //! from the masks during execution rather than tabulated, which is what keeps a
-//! plan's memory independent of `2^k`. The `size_of` assertions below keep
+//! plan's memory independent of $2^k$. The `size_of` assertions below keep
 //! both kernels within two cache lines.
 
 use std::mem::size_of;

@@ -2,36 +2,43 @@
 //!
 //! # State representation
 //!
-//! The engine tracks ticit's `CliffordFrame` `R` and a sparse complex amplitude
+//! The engine tracks ticit's `CliffordFrame` $R$ and a sparse complex amplitude
 //! map over destabilizer-coset
 //! labels. Writing
-//! `S_i = R Z_i R† = image_z(i)` (stabilizers) and `D_i = R X_i R† = image_x(i)`
-//! (destabilizers),
+//! $S\_i = R Z\_i R^\dagger$ (stabilizers) and
+//! $D\_i = R X\_i R^\dagger$ (destabilizers)
+//! where these are `image_z(i)` and `image_x(i)`, respectively,
 //!
-//! ```text
-//! |ψ⟩ = Σ_c xvec[c] · D^c |ψ0⟩,   |ψ0⟩ = R|0…0⟩,   D^c = ∏_{i: c_i=1} D_i.
-//! ```
+//! $$
+//! \lvert\psi\rangle = \sum\_c \operatorname{xvec}\[c\] D^c \lvert\psi\_0\rangle,
+//! \qquad \lvert\psi\_0\rangle = R\lvert0\ldots0\rangle,
+//! \qquad D^c = \prod\_{i:c\_i=1} D\_i.
+//! $$
 //!
-//! The clean way to see the whole scheme: `D^c|ψ0⟩ = R|c⟩`, so
-//! `|ψ⟩ = R|χ⟩` with `|χ⟩ = Σ_c xvec[c]|c⟩` the *rotated state* `R†|ψ⟩`. The
-//! amplitude map **is** `|χ⟩` in the computational basis. This gives every
-//! operation directly:
+//! The clean way to see the whole scheme: $D^c\lvert\psi\_0\rangle =
+//! R\lvert c\rangle$, so $\lvert\psi\rangle = R\lvert\chi\rangle$ with
+//! $\lvert\chi\rangle = \sum\_c \operatorname{xvec}\[c\]\lvert c\rangle$ the
+//! *rotated state* $R^\dagger\lvert\psi\rangle$. The amplitude map **is**
+//! $\lvert\chi\rangle$ in the computational basis. This gives every operation
+//! directly:
 //!
-//! * A Clifford gate `G` sends `|ψ⟩ → G|ψ⟩`, i.e. `R → G·R` (a `left_mul`),
-//!   and leaves `|χ⟩` — the amplitude map — untouched.
-//! * `T_P` and measurement act on `|ψ⟩` as `T`/projector about `P`, which in
-//!   the rotated frame is the same operation about `Q = R†PR = preimage(P)`,
-//!   acting on the computational-basis vector `|χ⟩`.
+//! * A Clifford gate $G$ sends $\lvert\psi\rangle \to G\lvert\psi\rangle$,
+//!   i.e. $R \to G R$ (a `left_mul`), and leaves $\lvert\chi\rangle$ — the
+//!   amplitude map — untouched.
+//! * $T\_P$ and measurement act on $\lvert\psi\rangle$ as a $T$ gate or
+//!   projector about $P$, which in the rotated frame is the same operation
+//!   about $Q = R^\dagger P R$ (`preimage(P)`), acting on the
+//!   computational-basis vector $\lvert\chi\rangle$.
 //!
 //! # Pauli decomposition in the frame
 //!
-//! For a Pauli `P`, `Q = R†PR = i^k · X^a Z^b` with `a` the x-bits, `b` the
-//! z-bits and `k` the phase exponent of the **X-then-Z** normal form (not
+//! For a Pauli $P$, $Q = R^\dagger P R = i^k X^a Z^b$ with $a$ the x-bits,
+//! $b$ the z-bits and $k$ the phase exponent of the **X-then-Z** normal form (not
 //! `xyz_phase_exponent`). Then on a basis term,
 //!
-//! ```text
-//! Q|c⟩ = i^k · (−1)^{⟨b,c⟩} · |c ⊕ a⟩.
-//! ```
+//! $$
+//! Q\lvert c\rangle = i^k (-1)^{\langle b,c\rangle}\lvert c \oplus a\rangle.
+//! $$
 //!
 //! Everything that sweeps the amplitude map is generic over its packed label
 //! type instead of dispatching per term.
