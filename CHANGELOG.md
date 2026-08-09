@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/inmzhang/ticit/compare/v0.1.1...v0.1.2) - 2026-08-09
+
+### Other
+
+- update package descriptions
+- fix manual PyPI publishing
+- register PyPI workflow
+- Merge pull request #11 from inmzhang/release-plz-2026-08-09T13-37-48Z
+
 ## [0.1.1](https://github.com/inmzhang/ticit/compare/v0.1.0...v0.1.1) - 2026-08-09
 
 ### Fixed
