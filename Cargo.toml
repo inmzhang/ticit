@@ -1,0 +1,46 @@
+[package]
+name = "ticit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Exact sampler for noisy, adaptive Clifford-dominated quantum circuits"
+repository.workspace = true
+documentation = "https://docs.rs/ticit"
+default-run = "ticit"
+
+[features]
+default = []
+gpu = ["dep:cutile", "dep:cutile-compiler"]
+
+[workspace]
+members = ["ticit_py", "xtask"]
+default-members = ["."]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/inmzhang/ticit"
+
+[workspace.dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cutile = { version = "0.2.0", optional = true }
+cutile-compiler = { version = "0.2.0", optional = true }
+fearless_simd = "0.6"
+num-complex = "0.4.6"
+thiserror = "2.0"
+
+[[bin]]
+name = "ticit"
+path = "src/main.rs"
+
+[package.metadata.cargo-machete]
+ignored = ["cutile-compiler"]

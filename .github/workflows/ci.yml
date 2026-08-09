@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --target ${{ matrix.target }}
+      - run: rustup default stable
+      - uses: taiki-e/install-action@nextest
+      - run: rustc -vV
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
+      - run: cargo nextest run --workspace --all-targets --target ${{ matrix.target }}

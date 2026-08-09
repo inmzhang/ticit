@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.8,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ticit"
+dynamic = ["version"]
+description = "Exact sampler for noisy, adaptive Clifford-dominated quantum circuits"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23"]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Repository = "https://github.com/inmzhang/ticit"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.maturin]
+module-name = "ticit._core"
+python-source = "python"
+features = ["pyo3/extension-module"]

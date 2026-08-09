@@ -1,0 +1,8 @@
+/target
+.claude/
+/ticit_py/.pytest_cache/
+/ticit_py/.venv/
+/ticit_py/**/__pycache__/
+/ticit_py/python/ticit/*.so
+/dist/
+/ticit_py/dist/
