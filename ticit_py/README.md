@@ -1,19 +1,8 @@
-# ticit Python bindings
+# ticit
 
-The `ticit` package exposes ticit's exact batch sampler through
-`Circuit.compile` then `Program.sample`. See
-[`docs/python_api_reference.md`](../docs/python_api_reference.md).
+Python binding for `ticit`, which is a pure-Rust implementation of
+[SymFT](https://arxiv.org/abs/2607.28600) with both CPU and an experimental
+CUDA backend utilizing [cutile-rs](https://github.com/NVlabs/cutile-rs).
 
-```python
-import ticit
-
-compiled_sampler = ticit.Circuit("M 0").compile()
-result = compiled_sampler.sample(shots=1_000, seed=42, bit_packed=True)
-```
-
-```sh
-maturin develop -m ticit_py/Cargo.toml
-cargo run -p ticit_py --bin stub_gen
-```
-
-Build with `--features gpu` to enable `backend="gpu"`.
+ See [`docs/python_api_reference.md`](../docs/python_api_reference.md) for
+ the available Python APIs.
