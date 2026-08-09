@@ -18,19 +18,19 @@ cargo build --release
 uv sync --project ticit_py
 ```
 
-### `ticit` CLI binary
+### CLI binary
 
 ```sh
 cargo install ticit
 ```
 
-### `ticit` Rust crate
+### Rust crate
 
 ```sh
 cargo add ticit
 ```
 
-### `ticit` Python package
+### Python package
 
 ```sh
 uv add ticit
