@@ -6,7 +6,6 @@
 /// handle; internal invariants (a decomposed net phase that is not real, a
 /// partner label missing from the amplitude map) are enforced with
 /// `debug_assert!` rather than surfaced here.
-///
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SimError {
@@ -47,13 +46,24 @@ pub enum SimError {
     #[error("controlled-Pauli control and target must commute")]
     NonCommutingControlledPaulis,
 
-    /// A controlled Pauli uses a sign or phase not represented by this API.
+    /// A controlled Pauli carries a sign or phase this API does not represent:
+    /// conditioning on `−P` is a different operation, not a global phase.
     #[error("controlled-Pauli axes must be positive Hermitian Paulis")]
     InvalidControlledPauli,
 
-    /// A measurement or rotation axis has an imaginary coefficient.
+    /// A measurement or rotation axis has an imaginary coefficient, so it is not
+    /// an observable.
     #[error("measurement and rotation axes must be Hermitian Paulis")]
     NonHermitianPauli,
+
+    /// A batched conditional Pauli named a measurement its own batch has not
+    /// produced. Records are indexed from the start of the batch, so this is a
+    /// malformed instruction stream rather than a state the run reached.
+    #[error("conditional Pauli reads batch record {index}, which the batch has not produced")]
+    MissingBatchRecord {
+        /// The out-of-range record index.
+        index: usize,
+    },
 
     /// A read-only observable names a qubit outside the live register.
     #[error("observable qubit index {index} is outside a {num_qubits}-qubit register")]

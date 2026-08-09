@@ -141,6 +141,149 @@ impl PauliString {
     pub fn same_body(&self, other: &Self) -> bool {
         self.nqubits == other.nqubits && self.x == other.x && self.z == other.z
     }
+
+    /// The string with `pauli` at `q` and identity everywhere else.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `q >= nqubits`.
+    #[must_use]
+    pub fn single(nqubits: usize, q: usize, pauli: Pauli) -> Self {
+        let mut out = Self::new(nqubits);
+        out.set(q, pauli);
+        out
+    }
+
+    /// Collects `(qubit, pauli)` terms into a string on `nqubits` qubits.
+    ///
+    /// Terms are *assignments*, not factors: a repeated index keeps the last
+    /// Pauli given for it rather than multiplying the two.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any index is `>= nqubits`.
+    #[must_use]
+    pub fn from_terms(nqubits: usize, terms: impl IntoIterator<Item = (usize, Pauli)>) -> Self {
+        let mut out = Self::new(nqubits);
+        for (q, pauli) in terms {
+            out.set(q, pauli);
+        }
+        out
+    }
+
+    /// The single-qubit Pauli acting on `q`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `q >= nqubits`.
+    #[must_use]
+    pub fn get(&self, q: usize) -> Pauli {
+        match (self.xbit(q), self.zbit(q)) {
+            (false, false) => Pauli::I,
+            (true, false) => Pauli::X,
+            (false, true) => Pauli::Z,
+            (true, true) => Pauli::Y,
+        }
+    }
+
+    /// Replaces the Pauli acting on `q`.
+    ///
+    /// The stored phase absorbs the body's implicit `i` per `Y`, so a string
+    /// built only from `set` is Hermitian — the phase convention documented at
+    /// the top of this module.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `q >= nqubits`.
+    pub fn set(&mut self, q: usize, pauli: Pauli) {
+        let was_y = self.get(q) == Pauli::Y;
+        let is_y = pauli == Pauli::Y;
+        self.set_xbit(q, matches!(pauli, Pauli::X | Pauli::Y));
+        self.set_zbit(q, matches!(pauli, Pauli::Z | Pauli::Y));
+        self.phase_shift(i32::from(is_y) - i32::from(was_y));
+    }
+
+    /// The packed `X` bits, for callers doing whole-word algebra.
+    #[must_use]
+    pub fn x_words(&self) -> &[u64] {
+        &self.x
+    }
+
+    /// The packed `Z` bits, with the same layout as [`x_words`](Self::x_words).
+    #[must_use]
+    pub fn z_words(&self) -> &[u64] {
+        &self.z
+    }
+
+    /// The largest qubit carrying a non-identity Pauli, or `None` for identity.
+    ///
+    /// This — not `nqubits` — bounds the register the string actually acts on,
+    /// so it is what a caller sizing a register against an observable wants.
+    #[must_use]
+    pub fn max_support(&self) -> Option<usize> {
+        self.x
+            .iter()
+            .zip(&self.z)
+            .enumerate()
+            .rev()
+            .find_map(|(word, (&x, &z))| {
+                let bits = x | z;
+                (bits != 0).then(|| word * 64 + 63 - bits.leading_zeros() as usize)
+            })
+    }
+
+    /// Whether `self` and `other` commute as operators.
+    #[must_use]
+    pub fn commutes_with(&self, other: &Self) -> bool {
+        !pauli_anticommutes(self, other)
+    }
+}
+
+/// A single-qubit Pauli operator.
+///
+/// The discriminants are the XZ symplectic encoding (`X` sets bit 0, `Z` sets
+/// bit 1), which [`PauliString::get`] and [`PauliString::set`] rely on.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pauli {
+    /// Identity.
+    I = 0,
+    /// Bit flip.
+    X = 1,
+    /// Phase flip.
+    Z = 2,
+    /// Both, i.e. `iXZ`.
+    Y = 3,
+}
+
+/// A Pauli *basis* — the non-identity Paulis, as an axis to rotate onto or
+/// measure along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PauliBasis {
+    /// The `X` axis.
+    X,
+    /// The `Y` axis.
+    Y,
+    /// The `Z` axis.
+    Z,
+}
+
+impl From<PauliBasis> for Pauli {
+    fn from(basis: PauliBasis) -> Self {
+        match basis {
+            PauliBasis::X => Pauli::X,
+            PauliBasis::Y => Pauli::Y,
+            PauliBasis::Z => Pauli::Z,
+        }
+    }
+}
+
+impl TryFrom<&str> for PauliString {
+    type Error = TicitError;
+
+    fn try_from(ops: &str) -> Result<Self> {
+        pauli_string(ops)
+    }
 }
 
 impl fmt::Display for PauliString {

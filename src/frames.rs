@@ -14,7 +14,7 @@ use std::cell::RefCell;
 
 use crate::bits::{bit_mask, check_qubit};
 use crate::errors::{Result, TicitError};
-use crate::pauli::{PauliString, pauli_anticommutes};
+use crate::pauli::PauliString;
 #[cfg(test)]
 use crate::symbolic::symbolic_bool;
 use crate::symbolic::{SymbolicBool, SymbolicContext};
@@ -339,24 +339,6 @@ impl CliffordFrame {
     pub fn invalidate_support_cache(&mut self) {
         self.support.get_mut().valid = false;
         self.coordinates.get_mut().valid = false;
-    }
-
-    /// Grow the frame by tensoring untouched `|0⟩` qubits onto the register.
-    pub(crate) fn grow_to(&mut self, nqubits: usize) {
-        if nqubits <= self.nqubits {
-            return;
-        }
-        let old = std::mem::replace(self, Self::new(nqubits));
-        for q in 0..old.nqubits {
-            for (src, dst) in [(old.xrow(q), self.xrow(q)), (old.zrow(q), self.zrow(q))] {
-                let mut row = old.rows[src].clone();
-                row.nqubits = nqubits;
-                row.x.resize(self.rows[dst].x.len(), 0);
-                row.z.resize(self.rows[dst].z.len(), 0);
-                self.rows[dst] = row;
-            }
-        }
-        self.invalidate_support_cache();
     }
 
     fn ensure_support_words(&self) {
@@ -742,53 +724,6 @@ pub fn left_z(frame: &mut CliffordFrame, q: usize) {
     add_row_phase(frame, x, 2);
 }
 
-/// Apply an arbitrary Pauli to the represented state.
-pub(crate) fn left_pauli(frame: &mut CliffordFrame, pauli: &PauliString) {
-    assert_eq!(frame.nqubits, pauli.nqubits);
-    for q in 0..frame.nqubits {
-        if pauli.xbit(q) {
-            add_row_phase(frame, frame.zrow(q), 2);
-        }
-        if pauli.zbit(q) {
-            add_row_phase(frame, frame.xrow(q), 2);
-        }
-    }
-}
-
-/// Apply a Pauli-controlled Pauli gate using the frame's existing preimages.
-pub(crate) fn left_controlled_pauli(
-    frame: &mut CliffordFrame,
-    control: &PauliString,
-    target: &PauliString,
-) {
-    assert_eq!(frame.nqubits, control.nqubits);
-    assert_eq!(frame.nqubits, target.nqubits);
-    let target_preimage = preimage(frame, target);
-    let control_preimage = preimage(frame, control);
-
-    for q in 0..frame.nqubits {
-        if control.xbit(q) {
-            let row = frame.zrow(q);
-            frame.rows[row] = &frame.rows[row] * &target_preimage;
-        }
-        if control.zbit(q) {
-            let row = frame.xrow(q);
-            frame.rows[row] = &frame.rows[row] * &target_preimage;
-        }
-    }
-    for q in 0..frame.nqubits {
-        if target.xbit(q) {
-            let row = frame.zrow(q);
-            frame.rows[row] = &control_preimage * &frame.rows[row];
-        }
-        if target.zbit(q) {
-            let row = frame.xrow(q);
-            frame.rows[row] = &control_preimage * &frame.rows[row];
-        }
-    }
-    frame.invalidate_support_cache();
-}
-
 pub fn left_cx(frame: &mut CliffordFrame, control: usize, target: usize) {
     let (xc, zc, xt, zt) = two_qubit_rows(frame, control, target);
     mul_rows(frame, xc, xc, xt, 0);
@@ -983,32 +918,6 @@ pub fn left_ycz(frame: &mut CliffordFrame, control: usize, target: usize) {
 // ==============================================================================
 // Right-multiplication gates: U <- U G, i.e. the gate is applied before the frame
 // ==============================================================================
-
-/// Right-multiply by a Pauli, changing only tableau row signs.
-pub(crate) fn right_pauli(frame: &mut CliffordFrame, pauli: &PauliString) {
-    assert_eq!(frame.nqubits, pauli.nqubits);
-    for row in &mut frame.rows {
-        if pauli_anticommutes(row, pauli) {
-            row.phase_shift(2);
-        }
-    }
-}
-
-/// Right-multiply by `exp(iπ/4·generator)`.
-pub(crate) fn right_pauli_exp(frame: &mut CliffordFrame, generator: &PauliString) {
-    assert_eq!(frame.nqubits, generator.nqubits);
-    let mut changed = false;
-    for row in &mut frame.rows {
-        if pauli_anticommutes(row, generator) {
-            *row = &*row * generator;
-            row.phase_shift(1);
-            changed = true;
-        }
-    }
-    if changed {
-        frame.invalidate_support_cache();
-    }
-}
 
 #[cfg(test)]
 mod tests {

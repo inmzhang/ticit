@@ -31,11 +31,15 @@ pub mod tableau_simulator;
 
 pub use crate::circuit::Circuit;
 pub use crate::errors::{Result, TicitError};
-pub use crate::pauli::{PauliString, neg, pauli_identity, pauli_string, pauli_x, pauli_y, pauli_z};
+pub use crate::pauli::{
+    Pauli, PauliBasis, PauliString, neg, pauli_identity, pauli_string, pauli_x, pauli_y, pauli_z,
+};
 pub use crate::sampler::prepared::{
     SampleCounts, SampleResult, Sampler, SamplerInfo, SamplerOptions, SamplingTiming,
 };
-pub use crate::tableau_simulator::{MeasureResult, SimError, TableauSimulator};
+pub use crate::tableau_simulator::{
+    BatchOutcome, Gate1Q, Instruction, MeasureResult, SimError, TableauSimulator,
+};
 
 pub(crate) use crate::sampler::{batch, exogenous, presampled_expression};
 

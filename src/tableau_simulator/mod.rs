@@ -2,68 +2,83 @@
 //!
 //! # State representation
 //!
-//! The engine tracks ticit's `CliffordFrame` $R$ and a sparse complex amplitude
-//! map over destabilizer-coset
+//! The engine tracks a single Clifford frame `R` (a [`Frame`], the owned
+//! preimage tableau) and a sparse complex amplitude map over destabilizer-coset
 //! labels. Writing
-//! $S\_i = R Z\_i R^\dagger$ (stabilizers) and
-//! $D\_i = R X\_i R^\dagger$ (destabilizers)
-//! where these are `image_z(i)` and `image_x(i)`, respectively,
+//! `S_i = R Z_i R† = image_z(i)` (stabilizers) and `D_i = R X_i R† = image_x(i)`
+//! (destabilizers),
 //!
-//! $$
-//! \lvert\psi\rangle = \sum\_c \operatorname{xvec}\[c\] D^c \lvert\psi\_0\rangle,
-//! \qquad \lvert\psi\_0\rangle = R\lvert0\ldots0\rangle,
-//! \qquad D^c = \prod\_{i:c\_i=1} D\_i.
-//! $$
+//! ```text
+//! |ψ⟩ = Σ_c xvec[c] · D^c |ψ0⟩,   |ψ0⟩ = R|0…0⟩,   D^c = ∏_{i: c_i=1} D_i.
+//! ```
 //!
-//! The clean way to see the whole scheme: $D^c\lvert\psi\_0\rangle =
-//! R\lvert c\rangle$, so $\lvert\psi\rangle = R\lvert\chi\rangle$ with
-//! $\lvert\chi\rangle = \sum\_c \operatorname{xvec}\[c\]\lvert c\rangle$ the
-//! *rotated state* $R^\dagger\lvert\psi\rangle$. The amplitude map **is**
-//! $\lvert\chi\rangle$ in the computational basis. This gives every operation
-//! directly:
+//! The clean way to see the whole scheme: `D^c|ψ0⟩ = R|c⟩`, so
+//! `|ψ⟩ = R|χ⟩` with `|χ⟩ = Σ_c xvec[c]|c⟩` the *rotated state* `R†|ψ⟩`. The
+//! amplitude map **is** `|χ⟩` in the computational basis. This gives every
+//! operation directly:
 //!
-//! * A Clifford gate $G$ sends $\lvert\psi\rangle \to G\lvert\psi\rangle$,
-//!   i.e. $R \to G R$ (a `left_mul`), and leaves $\lvert\chi\rangle$ — the
-//!   amplitude map — untouched.
-//! * $T\_P$ and measurement act on $\lvert\psi\rangle$ as a $T$ gate or
-//!   projector about $P$, which in the rotated frame is the same operation
-//!   about $Q = R^\dagger P R$ (`preimage(P)`), acting on the
-//!   computational-basis vector $\lvert\chi\rangle$.
+//! * A Clifford gate `G` sends `|ψ⟩ → G|ψ⟩`, i.e. `R → G·R` (a `left_mul`),
+//!   and leaves `|χ⟩` — the amplitude map — untouched.
+//! * `T_P` and measurement act on `|ψ⟩` as `T`/projector about `P`, which in
+//!   the rotated frame is the same operation about `Q = R†PR = preimage(P)`,
+//!   acting on the computational-basis vector `|χ⟩`.
 //!
 //! # Pauli decomposition in the frame
 //!
-//! For a Pauli $P$, $Q = R^\dagger P R = i^k X^a Z^b$ with $a$ the x-bits,
-//! $b$ the z-bits and $k$ the phase exponent of the **X-then-Z** normal form (not
+//! For a Pauli `P`, `Q = R†PR = i^k · X^a Z^b` with `a` the x-bits, `b` the
+//! z-bits and `k` the phase exponent of the **X-then-Z** normal form (not
 //! `xyz_phase_exponent`). Then on a basis term,
 //!
-//! $$
-//! Q\lvert c\rangle = i^k (-1)^{\langle b,c\rangle}\lvert c \oplus a\rangle.
-//! $$
+//! ```text
+//! Q|c⟩ = i^k · (−1)^{⟨b,c⟩} · |c ⊕ a⟩.
+//! ```
 //!
-//! Everything that sweeps the amplitude map is generic over its packed label
-//! type instead of dispatching per term.
+//! # Width dispatch
+//!
+//! Everything that sweeps the amplitude map — `T`, both measurement branches,
+//! the expectation reads — is generic over the label type ([`label::LabelKey`]) rather
+//! than written against one runtime-width label. [`Amps`] holds the single
+//! specialization the register calls for, and each entry point matches on it
+//! *once* and hands the whole operation to a monomorphized body; nothing
+//! dispatches per term. [`Frame`] does the same for its row width, off the same
+//! rounding rule. See [`label`] for why the width is worth making a type.
 
-use std::collections::{HashMap, hash_map::RandomState};
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
-use std::hash::{BuildHasher, Hasher};
+use std::hash::{BuildHasher, Hasher, RandomState};
 
-use crate::frames::{self, CliffordFrame, coordinates_in_frame, preimage};
-use crate::pauli::{PauliString, measurement_phase_sign, pauli_anticommutes};
-use crate::random::rand_float;
 use num_complex::Complex64;
+use rustc_hash::FxHashMap;
 
+use crate::pauli::measurement_phase_sign;
+use crate::pauli::{Pauli, PauliBasis, PauliString};
+use crate::random::rand_float;
+
+/// The tableau oracle for [`TableauSimulator::apply_clifford`]; see there.
+#[cfg(test)]
+use paulimer::CliffordUnitary;
+
+mod batch;
 mod error;
+mod frame;
 mod label;
 
+pub use batch::{BatchOutcome, Gate1Q, Instruction};
 pub use error::SimError;
 
+use frame::{Axis, Frame, PauliWords, RowPauli, has_popcnt};
 use label::{Key, Label, LabelKey, Width};
 
-#[derive(Clone, Copy)]
-enum Axis {
-    X,
-    Y,
-    Z,
+/// The frame's view of a [`PauliString`] — its x/z words, borrowed.
+///
+/// One conversion site rather than a `From` impl on either side: `frame.rs` is
+/// compiled standalone by `tests/frame_differential.rs` and so cannot name
+/// `PauliString`, and `PauliString` has no business knowing about the frame.
+#[inline]
+fn words(pauli: &PauliString) -> PauliWords<'_> {
+    PauliWords {
+        x: pauli.x_words(),
+        z: pauli.z_words(),
+    }
 }
 
 /// Tolerance for "numerically deterministic" / "impossible to post-select"
@@ -82,7 +97,11 @@ const DEFAULT_PRUNE_EPSILON: f64 = 1e-12;
 /// Live-label ceiling: fails loudly long before memory is exhausted.
 const DEFAULT_RANK_CAP: usize = 1 << 20;
 
-/// Sign of the frame-compression rotation applied after a random measurement.
+/// Sign of the frame-compression rotation `exp(±iπ/4 · G)` applied to the
+/// amplitude map in the random-measurement branch. It is fixed by
+/// `paulimer`'s `left_mul_pauli_exp` convention and pinned by the dense
+/// cross-validation tests; the value is a single global constant, not
+/// per-case logic.
 const PAULI_EXP_SIGN: f64 = -1.0;
 
 /// Outcome of a Pauli measurement.
@@ -117,9 +136,10 @@ pub struct MeasureResult {
 /// to sample from it, so reporting it is free), and observables are
 /// [`PauliString`]s.
 ///
-/// The Clifford+T extension keeps ticit's names — [`t`](Self::t),
+/// The Clifford+T extension keeps this workspace's names — [`t`](Self::t),
 /// [`t_dag`](Self::t_dag), [`t_pauli`](Self::t_pauli), [`ccz`](Self::ccz) and
-/// [`rank`](Self::rank).
+/// [`rank`](Self::rank) — as does the batched
+/// [`apply_batch`](Self::apply_batch) instruction path.
 #[derive(Clone, Debug)]
 pub struct TableauSimulator {
     core: Core,
@@ -137,10 +157,12 @@ pub struct TableauSimulator {
 struct Core {
     /// Qubit count (grows on demand via [`TableauSimulator::ensure_qubits`]).
     n: usize,
-    /// `u64` words per label, rounded to the selected label storage width.
+    /// `u64` words per label. Read from the frame, so the two always agree and
+    /// masks pass between them without reslicing.
     words: usize,
     /// The Clifford frame `R`.
-    r: CliffordFrame,
+    r: Frame,
+    /// SplitMix64 state; the crate's one generator (`crate::random`).
     rng: u64,
     /// Amplitudes at or below this modulus are dropped after each `T` and
     /// measurement projection. Exact arithmetic preserves the norm, so this only
@@ -154,7 +176,7 @@ struct Core {
 /// The amplitude map and its staging buffers, at one label width.
 #[derive(Clone, Debug)]
 struct Terms<K: LabelKey> {
-    map: HashMap<K, Complex64>,
+    map: FxHashMap<K, Complex64>,
     /// Staging buffers for the coset-pair rewrites (`T` and projection).
     rotation: RotationScratch<K>,
 }
@@ -375,8 +397,10 @@ impl TableauSimulator {
     /// A fresh `|0…0⟩` simulator with a fixed RNG seed (reproducible sampling).
     #[must_use]
     pub fn with_seed(num_qubits: usize, seed: u64) -> Self {
-        let r = CliffordFrame::new(num_qubits);
-        let words = storage_words(num_qubits.div_ceil(64));
+        // The frame owns the rounding rule for the register width; taking it
+        // from there is what guarantees labels and rows stay the same width.
+        let r = Frame::identity(num_qubits);
+        let words = r.words();
         TableauSimulator {
             core: Core {
                 n: num_qubits,
@@ -436,78 +460,108 @@ impl TableauSimulator {
         if need <= self.core.n {
             return;
         }
-        self.core.r.grow_to(need);
-        let new_words = storage_words(need.div_ceil(64));
+        self.core.r.resize(need);
+        let new_words = self.core.r.words();
         if new_words > self.core.words {
             self.amps.widen(new_words);
             self.core.words = new_words;
         }
         self.core.n = need;
-        debug_assert_eq!(self.core.n, self.core.r.nqubits, "frame tracks register");
         debug_assert_eq!(
-            self.core.words,
-            storage_words(self.core.n.div_ceil(64)),
-            "label width tracks register",
+            self.core.n,
+            self.core.r.num_qubits(),
+            "frame tracks register"
         );
+        debug_assert_eq!(self.core.words, self.core.r.words(), "widths agree");
     }
 
     fn ensure_for(&mut self, pauli: &PauliString) {
-        if let Some(max) = max_support(pauli) {
+        if let Some(max) = pauli.max_support() {
             self.ensure_qubits(max + 1);
         }
     }
 
+    /// [`ensure_for`](Self::ensure_for) for an operator that has to be an
+    /// observable. The phase is checked *before* the register grows, so a
+    /// rejected axis leaves the engine exactly as it found it.
+    fn ensure_for_observable(&mut self, pauli: &PauliString) -> Result<(), SimError> {
+        measurement_phase_sign(pauli).map_err(|_| SimError::NonHermitianPauli)?;
+        self.ensure_for(pauli);
+        Ok(())
+    }
+
     // --- Clifford gates — mutate R only, xvec untouched. ---
+
+    /// Apply an arbitrary Clifford `cl` to `support` (`support[i]` is `cl`'s
+    /// qubit `i`).
+    ///
+    /// Test-only, and deliberately not public: every gate this engine offers is
+    /// reached by name or by Pauli axis in one or two frame row updates, and
+    /// nothing in production has a `CliffordUnitary` to hand. What survives is
+    /// the *oracle* role — the [`Gate1Q`] compositions are checked against the
+    /// tableaux they advertise by running both through here.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `support.len() != cl.num_qubits()` or `support` repeats an
+    /// index, both caller errors in a test.
+    #[cfg(test)]
+    fn apply_clifford(&mut self, cl: &CliffordUnitary, support: &[usize]) {
+        if let Some(&max) = support.iter().max() {
+            self.ensure_qubits(max + 1);
+        }
+        self.core.r.left_clifford(cl, support);
+    }
 
     /// Hadamard.
     pub fn h(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_h(&mut self.core.r, q);
+        self.core.r.left_h(q);
     }
     /// Phase gate `S = √Z`.
     pub fn s(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_s(&mut self.core.r, q);
+        self.core.r.left_s(q);
     }
     /// `S† = √Z†`.
     pub fn s_dag(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_sdg(&mut self.core.r, q);
+        self.core.r.left_s_dag(q);
     }
     /// Pauli `X`.
     pub fn x(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_x(&mut self.core.r, q);
+        self.core.r.left_x(q);
     }
     /// Pauli `Y`.
     pub fn y(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_y(&mut self.core.r, q);
+        self.core.r.left_y(q);
     }
     /// Pauli `Z`.
     pub fn z(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_z(&mut self.core.r, q);
+        self.core.r.left_z(q);
     }
     /// `√X`.
     pub fn sqrt_x(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_sqrt_x(&mut self.core.r, q);
+        self.core.r.left_sqrt_x(q);
     }
     /// `√X†`.
     pub fn sqrt_x_dag(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_sqrt_x_dag(&mut self.core.r, q);
+        self.core.r.left_sqrt_x_dag(q);
     }
     /// `√Y`.
     pub fn sqrt_y(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_sqrt_y(&mut self.core.r, q);
+        self.core.r.left_sqrt_y(q);
     }
     /// `√Y†`.
     pub fn sqrt_y_dag(&mut self, q: usize) {
         self.ensure_qubits(q + 1);
-        frames::left_sqrt_y_dag(&mut self.core.r, q);
+        self.core.r.left_sqrt_y_dag(q);
     }
     /// CNOT with `control`, `target`.
     ///
@@ -518,7 +572,7 @@ impl TableauSimulator {
             return Err(SimError::RepeatedQubit(control));
         }
         self.ensure_qubits(control.max(target) + 1);
-        frames::left_cx(&mut self.core.r, control, target);
+        self.core.r.left_cx(control, target);
         Ok(())
     }
     /// Controlled-Z (symmetric).
@@ -530,13 +584,13 @@ impl TableauSimulator {
             return Err(SimError::RepeatedQubit(a));
         }
         self.ensure_qubits(a.max(b) + 1);
-        frames::left_cz(&mut self.core.r, a, b);
+        self.core.r.left_cz(a, b);
         Ok(())
     }
     /// Swap.
     pub fn swap(&mut self, a: usize, b: usize) {
         self.ensure_qubits(a.max(b) + 1);
-        frames::left_swap(&mut self.core.r, a, b);
+        self.core.r.left_swap(a, b);
     }
 
     /// `ISWAP`: swap `a` and `b`, with an `i` on the two odd-parity terms.
@@ -570,26 +624,22 @@ impl TableauSimulator {
 
     /// `C_XYZ`: the order-three Pauli cycle `X → Y → Z → X`.
     pub fn c_xyz(&mut self, q: usize) {
-        self.ensure_qubits(q + 1);
-        frames::left_c_xyz(&mut self.core.r, q);
+        self.gate1(Gate1Q::Cxyz, q);
     }
 
     /// `C_ZYX`: the inverse cycle `X → Z → Y → X`.
     pub fn c_zyx(&mut self, q: usize) {
-        self.ensure_qubits(q + 1);
-        frames::left_c_zyx(&mut self.core.r, q);
+        self.gate1(Gate1Q::Czyx, q);
     }
 
     /// `H_XY`: the Hadamard-like exchange of `X` and `Y`.
     pub fn h_xy(&mut self, q: usize) {
-        self.ensure_qubits(q + 1);
-        frames::left_h_xy(&mut self.core.r, q);
+        self.gate1(Gate1Q::Hxy, q);
     }
 
     /// `H_YZ`: the Hadamard-like exchange of `Y` and `Z`.
     pub fn h_yz(&mut self, q: usize) {
-        self.ensure_qubits(q + 1);
-        frames::left_h_yz(&mut self.core.r, q);
+        self.gate1(Gate1Q::Hyz, q);
     }
 
     // --- The `<A>C<B>` family ---
@@ -621,7 +671,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn xcx(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_xcx)
+        self.gate2(PauliBasis::X, PauliBasis::X, control, target)
     }
 
     /// `XCY`.
@@ -629,7 +679,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn xcy(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_xcy)
+        self.gate2(PauliBasis::X, PauliBasis::Y, control, target)
     }
 
     /// `XCZ`.
@@ -637,7 +687,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn xcz(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_xcz)
+        self.gate2(PauliBasis::X, PauliBasis::Z, control, target)
     }
 
     /// `YCX`.
@@ -645,7 +695,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn ycx(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_ycx)
+        self.gate2(PauliBasis::Y, PauliBasis::X, control, target)
     }
 
     /// `YCY`.
@@ -653,7 +703,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn ycy(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_ycy)
+        self.gate2(PauliBasis::Y, PauliBasis::Y, control, target)
     }
 
     /// `YCZ`.
@@ -661,7 +711,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn ycz(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_ycz)
+        self.gate2(PauliBasis::Y, PauliBasis::Z, control, target)
     }
 
     /// `ZCX`, i.e. [`cx`](Self::cx).
@@ -677,7 +727,7 @@ impl TableauSimulator {
     /// # Errors
     /// [`SimError::RepeatedQubit`] if both operands name the same qubit.
     pub fn zcy(&mut self, control: usize, target: usize) -> Result<(), SimError> {
-        self.apply_two_qubit(control, target, frames::left_cy)
+        self.gate2(PauliBasis::Z, PauliBasis::Y, control, target)
     }
 
     /// `ZCZ`, i.e. [`cz`](Self::cz).
@@ -691,50 +741,34 @@ impl TableauSimulator {
     /// Apply a Pauli `P` to the state (`R → P·R`).
     pub fn pauli(&mut self, p: &PauliString) {
         self.ensure_for(p);
-        let p = pauli_on_register(p, self.core.n).expect("register covers Pauli support");
-        frames::left_pauli(&mut self.core.r, &p);
+        self.core.r.left_pauli(words(p));
     }
 
     /// Apply `control`-conditioned `target` (both Paulis).
     ///
     /// # Errors
-    /// [`SimError::NonCommutingControlledPaulis`] if the axes anticommute.
+    /// [`SimError::NonCommutingControlledPaulis`] if the axes anticommute, or
+    /// [`SimError::InvalidControlledPauli`] if either axis carries a sign or an
+    /// imaginary coefficient — conditioning on `−P` is a different operation,
+    /// and the frame update below only represents the positive one.
     pub fn controlled_pauli(
         &mut self,
         control: &PauliString,
         target: &PauliString,
     ) -> Result<(), SimError> {
-        let nqubits = [max_support(control), max_support(target)]
-            .into_iter()
-            .flatten()
-            .max()
-            .map_or(self.core.n, |q| self.core.n.max(q + 1));
-        let control = pauli_on_register(control, nqubits)?;
-        let target = pauli_on_register(target, nqubits)?;
-        if pauli_anticommutes(&control, &target) {
+        if !control.commutes_with(target) {
             return Err(SimError::NonCommutingControlledPaulis);
         }
-        if measurement_phase_sign(&control).ok() != Some(false)
-            || measurement_phase_sign(&target).ok() != Some(false)
+        if measurement_phase_sign(control).ok() != Some(false)
+            || measurement_phase_sign(target).ok() != Some(false)
         {
             return Err(SimError::InvalidControlledPauli);
         }
-        self.ensure_qubits(nqubits);
-        frames::left_controlled_pauli(&mut self.core.r, &control, &target);
-        Ok(())
-    }
-
-    fn apply_two_qubit(
-        &mut self,
-        a: usize,
-        b: usize,
-        gate: fn(&mut CliffordFrame, usize, usize),
-    ) -> Result<(), SimError> {
-        if a == b {
-            return Err(SimError::RepeatedQubit(a));
-        }
-        self.ensure_qubits(a.max(b) + 1);
-        gate(&mut self.core.r, a, b);
+        self.ensure_for(control);
+        self.ensure_for(target);
+        self.core
+            .r
+            .left_controlled_pauli(words(control), words(target));
         Ok(())
     }
 
@@ -743,8 +777,8 @@ impl TableauSimulator {
     /// Apply `T_P(±) = cos(π/8)·I ∓ i·sin(π/8)·P` about the Pauli axis `axis`
     /// (`adjoint = true` selects the `+` sign, i.e. `T†`).
     ///
-    /// The register grows to cover the axis support. Axes with an imaginary
-    /// coefficient are rejected.
+    /// A [`PauliString`] is Hermitian by construction, so any axis is a legal
+    /// rotation generator; the register grows to cover its support.
     ///
     /// # Errors
     ///
@@ -754,19 +788,18 @@ impl TableauSimulator {
     /// # Examples
     ///
     /// ```
-    /// use ticit::{TableauSimulator, pauli_string};
+    /// use ticit::{PauliString, TableauSimulator};
     ///
     /// // T about Z on |+⟩ leaves ⟨X⟩ = ⟨Y⟩ = 1/√2.
     /// let mut sim = TableauSimulator::with_seed(1, 0);
     /// sim.h(0);
-    /// sim.t_pauli(&pauli_string("Z")?, false)?;
-    /// let x = sim.peek_observable_expectation(&pauli_string("X")?)?;
+    /// sim.t_pauli(&PauliString::try_from("Z")?, false)?;
+    /// let x = sim.peek_observable_expectation(&PauliString::try_from("X")?)?;
     /// assert!((x - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn t_pauli(&mut self, axis: &PauliString, adjoint: bool) -> Result<(), SimError> {
-        measurement_phase_sign(axis).map_err(|_| SimError::NonHermitianPauli)?;
-        self.ensure_for(axis);
+        self.ensure_for_observable(axis)?;
         with_terms!(self, |core, terms| {
             let d = core.decompose(axis)?;
             terms.t_decomposed(core, &d, adjoint)
@@ -800,10 +833,14 @@ impl TableauSimulator {
     }
 
     /// Apply a `CCZ` on qubits `a`, `b`, `c` (symmetric) via seven `π/8`
-    /// rotations. `CCZ` has the phase-polynomial decomposition
+    /// rotations.
+    ///
+    /// `CCZ` has the phase-polynomial decomposition
     /// `exp(iπ/8·[−Z_a − Z_b − Z_c + Z_aZ_b + Z_aZ_c + Z_bZ_c − Z_aZ_bZ_c])`
-    /// (global phase `e^{iπ/8}` unobservable):
-    /// `4abc = a + b + c − (a⊕b) − (a⊕c) −
+    /// (global phase `e^{iπ/8}` unobservable), following clifft's
+    /// `append_ccz_decomposition`
+    /// ([github.com/unitaryfoundation/clifft](https://github.com/unitaryfoundation/clifft),
+    /// `src/clifft/circuit/parser.cc`): `4abc = a + b + c − (a⊕b) − (a⊕c) −
     /// (b⊕c) + (a⊕b⊕c)`, i.e. 7 `T`s + 6 `CX`s. In the stabilizer frame the
     /// `CX` conjugations only retarget the `T` axes, so we apply the seven
     /// rotations directly on multi-qubit `Z` axes — no `CX`s needed:
@@ -863,9 +900,11 @@ impl TableauSimulator {
             (&[b, c][..], true),
             (&[a, b, c][..], false),
         ] {
-            axis.z.fill(0);
+            for site in [a, b, c] {
+                axis.set(site, Pauli::I);
+            }
             for &site in operands {
-                axis.set_zbit(site, true);
+                axis.set(site, Pauli::Z);
             }
             self.t_pauli(&axis, adjoint)?;
         }
@@ -905,7 +944,8 @@ impl TableauSimulator {
     /// Measure the Pauli observable `observable`, sampling the outcome. The
     /// register grows to cover its support.
     ///
-    /// Observables with an imaginary coefficient are rejected.
+    /// A [`PauliString`] is Hermitian by construction, so any string is a legal
+    /// observable.
     ///
     /// # Errors
     /// [`SimError::RankOverflow`] if the projection exceeds the rank cap.
@@ -913,13 +953,13 @@ impl TableauSimulator {
     /// # Examples
     ///
     /// ```
-    /// use ticit::{TableauSimulator, pauli_string};
+    /// use ticit::{PauliString, TableauSimulator};
     ///
     /// let mut sim = TableauSimulator::with_seed(2, 1);
     /// sim.h(0);
     /// sim.cx(0, 1)?;
     /// // `ZZ` stabilizes a Bell pair, so reading it disturbs nothing.
-    /// let result = sim.measure_observable(&pauli_string("ZZ")?)?;
+    /// let result = sim.measure_observable(&PauliString::try_from("ZZ")?)?;
     /// assert!(result.deterministic && !result.outcome);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -927,8 +967,7 @@ impl TableauSimulator {
         &mut self,
         observable: &PauliString,
     ) -> Result<MeasureResult, SimError> {
-        measurement_phase_sign(observable).map_err(|_| SimError::NonHermitianPauli)?;
-        self.ensure_for(observable);
+        self.ensure_for_observable(observable)?;
         with_terms!(self, |core, terms| {
             let d = core.decompose(observable)?;
             terms.measure_decomposed(core, &d, None)
@@ -950,8 +989,7 @@ impl TableauSimulator {
         observable: &PauliString,
         desired_value: bool,
     ) -> Result<MeasureResult, SimError> {
-        measurement_phase_sign(observable).map_err(|_| SimError::NonHermitianPauli)?;
-        self.ensure_for(observable);
+        self.ensure_for_observable(observable)?;
         with_terms!(self, |core, terms| {
             let d = core.decompose(observable)?;
             terms.measure_decomposed(core, &d, Some(desired_value))
@@ -1032,12 +1070,12 @@ impl TableauSimulator {
     /// # Examples
     ///
     /// ```
-    /// use ticit::{TableauSimulator, pauli_string};
+    /// use ticit::{PauliString, TableauSimulator};
     ///
     /// let mut sim = TableauSimulator::with_seed(2, 0);
     /// sim.h(0);
     /// sim.cx(0, 1)?;
-    /// let xx = pauli_string("XX")?;
+    /// let xx = PauliString::try_from("XX")?;
     /// assert!((sim.peek_observable_expectation(&xx)? - 1.0).abs() < 1e-9);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -1130,9 +1168,9 @@ impl TableauSimulator {
     fn reset_about(&mut self, axis: Axis, q: usize, correction: Axis) -> Result<(), SimError> {
         if self.measure_axis(axis, q, None)?.outcome {
             match correction {
-                Axis::X => frames::left_x(&mut self.core.r, q),
-                Axis::Y => frames::left_y(&mut self.core.r, q),
-                Axis::Z => frames::left_z(&mut self.core.r, q),
+                Axis::X => self.core.r.left_x(q),
+                Axis::Y => self.core.r.left_y(q),
+                Axis::Z => self.core.r.left_z(q),
             }
         }
         Ok(())
@@ -1167,12 +1205,7 @@ impl TableauSimulator {
         // it by projecting a computational-basis fiducial through ∏(I+S_i)/2 =
         // |ψ0⟩⟨ψ0|; any fiducial with nonzero overlap works (global phase is
         // irrelevant to the up-to-phase comparison callers make).
-        let stabs: Vec<PauliString> = (0..n)
-            .map(|i| {
-                coordinates_in_frame(&self.core.r, &crate::pauli::pauli_z(n, i))
-                    .expect("valid Clifford frame")
-            })
-            .collect();
+        let stabs: Vec<RowPauli> = (0..n).map(|i| self.core.r.image_z(i)).collect();
         let mut psi0 = vec![Complex64::new(0.0, 0.0); dim];
         for fiducial in 0..dim {
             let mut v = vec![Complex64::new(0.0, 0.0); dim];
@@ -1194,12 +1227,7 @@ impl TableauSimulator {
         }
 
         // |ψ⟩ = Σ_c xvec[c] · D^c|ψ0⟩, D_i = image_x(i), applied per set bit.
-        let destabs: Vec<PauliString> = (0..n)
-            .map(|i| {
-                coordinates_in_frame(&self.core.r, &crate::pauli::pauli_x(n, i))
-                    .expect("valid Clifford frame")
-            })
-            .collect();
+        let destabs: Vec<RowPauli> = (0..n).map(|i| self.core.r.image_x(i)).collect();
         let mut out = vec![Complex64::new(0.0, 0.0); dim];
         match &self.amps {
             Amps::W1(t) => replay_terms(&t.map, &psi0, &destabs, &mut out),
@@ -1222,14 +1250,23 @@ impl Core {
     /// The frame writes the two masks straight into the label words, so the
     /// only cost beyond the row product is the two (inline) labels.
     fn decompose<K: LabelKey>(&self, p: &PauliString) -> Result<Decomp<K>, SimError> {
-        measurement_phase_sign(p).map_err(|_| SimError::NonHermitianPauli)?;
-        let p = pauli_on_register(p, self.n)?;
-        let transformed = preimage(&self.r, &p);
+        if let Some(index) = p.max_support().filter(|&index| index >= self.n) {
+            return Err(SimError::QubitIndexOutOfRange {
+                index,
+                num_qubits: self.n,
+            });
+        }
+        // `words` carries only the body, so the operator's own coefficient has
+        // to be folded in here: a `−1` is `i^2`, and an imaginary one is not an
+        // observable at all.
+        let negated = measurement_phase_sign(p).map_err(|_| SimError::NonHermitianPauli)?;
         let mut a = K::zeros(self.words);
         let mut b = K::zeros(self.words);
-        a.as_mut_slice()[..transformed.x.len()].copy_from_slice(&transformed.x);
-        b.as_mut_slice()[..transformed.z.len()].copy_from_slice(&transformed.z);
-        let phase = transformed.phase_exponent() as u8;
+        let phase = (self
+            .r
+            .preimage_into(words(p), a.as_mut_slice(), b.as_mut_slice())
+            + 2 * u8::from(negated))
+            & 3;
         Ok(Decomp {
             a,
             b,
@@ -1246,13 +1283,17 @@ impl Core {
     /// The caller must have grown the register past `qubit`; a basis axis
     /// cannot be non-Hermitian or out of range, so this is infallible.
     fn decompose_basis<K: LabelKey>(&self, axis: Axis, qubit: usize) -> Decomp<K> {
-        let pauli = match axis {
-            Axis::X => crate::pauli::pauli_x(self.n, qubit),
-            Axis::Y => crate::pauli::pauli_y(self.n, qubit),
-            Axis::Z => crate::pauli::pauli_z(self.n, qubit),
-        };
-        self.decompose(&pauli)
-            .expect("single-qubit Pauli is Hermitian and in range")
+        let mut a = K::zeros(self.words);
+        let mut b = K::zeros(self.words);
+        let phase = self
+            .r
+            .preimage_basis_into(axis, qubit, a.as_mut_slice(), b.as_mut_slice());
+        Decomp {
+            a,
+            b,
+            phase,
+            zeta: i_pow(phase),
+        }
     }
 
     /// Sample or force an outcome. `p0` is the probability of the `+1` (`false`)
@@ -1342,7 +1383,7 @@ impl Amps {
 
     /// Every live term as raw words plus its amplitude.
     fn drain_terms(&mut self) -> Vec<(Vec<u64>, Complex64)> {
-        fn collect<K: LabelKey>(map: &mut HashMap<K, Complex64>) -> Vec<(Vec<u64>, Complex64)> {
+        fn collect<K: LabelKey>(map: &mut FxHashMap<K, Complex64>) -> Vec<(Vec<u64>, Complex64)> {
             map.drain()
                 .map(|(key, value)| (key.as_slice().to_vec(), value))
                 .collect()
@@ -1355,6 +1396,15 @@ impl Amps {
             Amps::Wide(t) => collect(&mut t.map),
         }
     }
+
+    /// The single-word specialization, for tests that spell labels out by hand.
+    #[cfg(test)]
+    fn narrow(&mut self) -> &mut Terms<Key<1>> {
+        match self {
+            Amps::W1(terms) => terms,
+            other => panic!("expected a one-word map, got {:?}", other.width()),
+        }
+    }
 }
 
 // ==============================================================================
@@ -1364,7 +1414,7 @@ impl Amps {
 impl<K: LabelKey> Terms<K> {
     /// The single-term map of a fresh `|0…0⟩` state.
     fn unit(words: usize) -> Self {
-        let mut map = HashMap::new();
+        let mut map = FxHashMap::default();
         map.insert(K::zeros(words), Complex64::new(1.0, 0.0));
         Terms {
             map,
@@ -1389,6 +1439,34 @@ impl<K: LabelKey> Terms<K> {
     /// the rotation lives, shared by [`TableauSimulator::t_pauli`] and the basis-axis
     /// entry points that never build a `PauliString`.
     fn t_decomposed(&mut self, core: &Core, d: &Decomp<K>, adjoint: bool) -> Result<(), SimError> {
+        #[cfg(target_arch = "x86_64")]
+        if has_popcnt() {
+            // SAFETY: `has_popcnt` is the CPUID probe for exactly the feature
+            // the callee enables.
+            #[allow(unsafe_code)] // the statement, not the function
+            return unsafe { self.t_decomposed_popcnt(core, d, adjoint) };
+        }
+        self.t_decomposed_inner(core, d, adjoint)
+    }
+
+    /// [`t_decomposed`](Self::t_decomposed)'s `popcnt`-enabled twin. See
+    /// [`frame::has_popcnt`] for why these exist.
+    ///
+    /// The body must be `inline(always)`: a `#[target_feature]` function only
+    /// carries the feature into code inlined *into* it, so a twin LLVM
+    /// declines to inline compiles to a `jmp` and selects the same
+    /// instructions as the plain path. That failure reads as "no gain" in a
+    /// benchmark, so both surviving twins are checked with
+    /// `objdump -d target/release/… | grep popcnt` rather than by timing
+    /// alone.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    fn t_decomposed_popcnt(
+        &mut self,
+        core: &Core,
+        d: &Decomp<K>,
+        adjoint: bool,
+    ) -> Result<(), SimError> {
         self.t_decomposed_inner(core, d, adjoint)
     }
 
@@ -1743,8 +1821,9 @@ impl<K: LabelKey> Terms<K> {
     /// because `Z^b·Z_p = Z^{b⊕e_p}` costs no phase. The `−i` is what makes `G`
     /// Hermitian: `P` anticommutes with `S_p` here, so their product is
     /// anti-Hermitian. `+i` would serve as well — the amplitude side derives
-    /// its rotation from the same `G`, so the two sign choices cancel. One
-    /// source of truth for `G` keeps the two sides consistent.
+    /// its rotation from the same `G`, so the two sign choices cancel — but
+    /// `−i` is what `paulimer`'s update picks, and one source of truth for `G`
+    /// is what keeps the two sides consistent.
     fn measure_random(
         &mut self,
         core: &mut Core,
@@ -1839,15 +1918,10 @@ impl<K: LabelKey> Terms<K> {
         // Update R to match the committed map: `R ← R·Z_p^s·exp(iπ/4·G)`, the
         // right-multiplied form of the frame update (see above).
         if s {
-            let z = crate::pauli::pauli_z(core.n, pivot);
-            frames::right_pauli(&mut core.r, &z);
+            core.r.right_pauli_z(pivot);
         }
-        let mut generator = PauliString::new(core.n);
-        let words = generator.x.len();
-        generator.x.copy_from_slice(&d.a.as_slice()[..words]);
-        generator.z.copy_from_slice(&gb.as_slice()[..words]);
-        generator.set_phase(i32::from(g_phase));
-        frames::right_pauli_exp(&mut core.r, &generator);
+        core.r
+            .right_pauli_exp(d.a.as_slice(), gb.as_slice(), g_phase);
 
         // A frame-random observable can still be a state eigenvalue (e.g. X on
         // |+⟩): report determinism from the probability, not the branch.
@@ -1920,6 +1994,19 @@ impl<K: LabelKey> Terms<K> {
     /// `c ⊕ a`. Shared by [`TableauSimulator::measure`] and [`TableauSimulator::expectation`]
     /// — the one place the algebra lives.
     fn expectation_of(&self, d: &Decomp<K>) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        if has_popcnt() {
+            // SAFETY: as in `t_decomposed`.
+            #[allow(unsafe_code)] // the statement, not the function
+            return unsafe { self.expectation_of_popcnt(d) };
+        }
+        self.expectation_of_inner(d)
+    }
+
+    /// [`expectation_of`](Self::expectation_of)'s `popcnt` twin.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    fn expectation_of_popcnt(&self, d: &Decomp<K>) -> f64 {
         self.expectation_of_inner(d)
     }
 
@@ -1994,44 +2081,6 @@ impl<K: LabelKey> Terms<K> {
 // Free helpers
 // ==============================================================================
 
-fn storage_words(words: usize) -> usize {
-    match words {
-        0 | 1 => 1,
-        2 => 2,
-        3 | 4 => 4,
-        5..=8 => 8,
-        _ => words,
-    }
-}
-
-fn max_support(pauli: &PauliString) -> Option<usize> {
-    pauli
-        .x
-        .iter()
-        .zip(&pauli.z)
-        .enumerate()
-        .rev()
-        .find_map(|(word, (&x, &z))| {
-            let bits = x | z;
-            (bits != 0).then(|| word * 64 + 63 - bits.leading_zeros() as usize)
-        })
-}
-
-fn pauli_on_register(pauli: &PauliString, nqubits: usize) -> Result<PauliString, SimError> {
-    if let Some(index) = max_support(pauli).filter(|&index| index >= nqubits) {
-        return Err(SimError::QubitIndexOutOfRange {
-            index,
-            num_qubits: nqubits,
-        });
-    }
-    let mut out = PauliString::new(nqubits);
-    let words = out.x.len().min(pauli.x.len());
-    out.x[..words].copy_from_slice(&pauli.x[..words]);
-    out.z[..words].copy_from_slice(&pauli.z[..words]);
-    out.set_phase(pauli.phase_exponent());
-    Ok(out)
-}
-
 /// Hand capacity back once a map has outgrown its contents fourfold.
 ///
 /// The amplitude map and its staging buffer are reused rather than rebuilt, and
@@ -2039,7 +2088,7 @@ fn pauli_on_register(pauli: &PauliString, nqubits: usize) -> Result<PauliString,
 /// array, a map that peaked at a million labels would keep charging that on
 /// every pass long after a measurement collapsed the rank back to one. The 4×
 /// hysteresis keeps ordinary growth off the reallocation path.
-fn shrink_if_sparse<K: LabelKey>(map: &mut HashMap<K, Complex64>, live: usize) {
+fn shrink_if_sparse<K: LabelKey>(map: &mut FxHashMap<K, Complex64>, live: usize) {
     let target = live.max(16);
     if map.capacity() > 4 * target {
         map.shrink_to(2 * target);
@@ -2057,9 +2106,9 @@ fn eig_plus<K: LabelKey>(c: &K, b: &K, zsign: f64) -> bool {
 /// [`TableauSimulator::state_vector`], split out so it can be monomorphized per width
 /// like everything else that reads a label.
 fn replay_terms<K: LabelKey>(
-    map: &HashMap<K, Complex64>,
+    map: &FxHashMap<K, Complex64>,
     psi0: &[Complex64],
-    destabs: &[PauliString],
+    destabs: &[RowPauli],
     out: &mut [Complex64],
 ) {
     for (c, &amp) in map {
@@ -2077,7 +2126,7 @@ fn replay_terms<K: LabelKey>(
 
 /// Apply a signed dense Pauli `P = i^k X^a Z^b` to a state vector:
 /// `(P v)[y ⊕ a] = i^k·(−1)^{⟨b,y⟩}·v[y]`. Small-`n` test support.
-fn apply_pauli_dense(v: &[Complex64], p: &PauliString) -> Vec<Complex64> {
+fn apply_pauli_dense(v: &[Complex64], p: &RowPauli) -> Vec<Complex64> {
     /// A frame row's mask as a state-vector index mask. Reconstruction is
     /// `O(2^n)`, so `n` never reaches the second word.
     fn index_mask(mask: &[u64]) -> usize {
@@ -2088,7 +2137,7 @@ fn apply_pauli_dense(v: &[Complex64], p: &PauliString) -> Vec<Complex64> {
         mask[0] as usize
     }
 
-    let zeta = i_pow(p.phase_exponent() as u8);
+    let zeta = i_pow(p.phase);
     let amask = index_mask(&p.x);
     let bmask = index_mask(&p.z);
     let mut out = vec![Complex64::new(0.0, 0.0); v.len()];
@@ -2106,114 +2155,11 @@ fn apply_pauli_dense(v: &[Complex64], p: &PauliString) -> Vec<Complex64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pauli::{neg, pauli_string, pauli_x, pauli_y, pauli_z};
 
-    fn assert_same_state(actual: &[Complex64], expected: &[Complex64]) {
-        let (&a, &b) = actual
-            .iter()
-            .zip(expected)
-            .find(|(_, b)| b.norm_sqr() > TOL)
-            .expect("state has a nonzero amplitude");
-        let phase = a / b;
-        for (&a, &b) in actual.iter().zip(expected) {
-            assert!((a - phase * b).norm() < TOL, "{actual:?} != {expected:?}");
-        }
-    }
+    use crate::pauli::{neg, pauli_string, pauli_x, pauli_z};
 
-    #[test]
-    fn measurement_can_drive_external_control_flow() {
-        let mut sim = TableauSimulator::with_seed(2, 7);
-        sim.h(0);
-        sim.cx(0, 1).expect("distinct qubits");
-
-        if sim.measure(0).expect("measurement succeeds").outcome {
-            sim.x(1);
-        }
-
-        let second = sim.measure(1).expect("measurement succeeds");
-        assert!(!second.outcome);
-        assert!(second.deterministic);
-    }
-
-    #[test]
-    fn pauli_rotation_and_expectation_use_existing_pauli_strings() {
-        let mut sim = TableauSimulator::with_seed(1, 0);
-        sim.h(0);
-        sim.t_pauli(&pauli_z(1, 0), false)
-            .expect("rotation succeeds");
-        let x = sim
-            .peek_observable_expectation(&pauli_string("X").expect("valid Pauli"))
-            .expect("observable is in range");
-        assert!((x - FRAC_1_SQRT_2).abs() < TOL);
-    }
-
-    #[test]
-    fn gates_grow_the_shared_tableau_engine() {
-        let mut sim = TableauSimulator::with_seed(1, 0);
-        sim.h(65);
-        assert_eq!(sim.num_qubits(), 66);
-        assert_eq!(sim.core.r.nqubits, 66);
-        assert!((sim.peek_x(65).expect("qubit exists") - 1.0).abs() < TOL);
-    }
-
-    #[test]
-    fn state_vector_matches_hadamard_and_t() {
-        let mut sim = TableauSimulator::with_seed(1, 0);
-        sim.h(0);
-        sim.t(0).expect("rotation succeeds");
-        let phase = Complex64::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2);
-        assert_same_state(
-            &sim.state_vector(),
-            &[Complex64::new(FRAC_1_SQRT_2, 0.0), FRAC_1_SQRT_2 * phase],
-        );
-    }
-
-    #[test]
-    fn generic_controlled_paulis_match_all_named_axis_pairs() {
-        type AxisPauli = fn(usize, usize) -> PauliString;
-        type NamedGate = fn(&mut TableauSimulator, usize, usize) -> Result<(), SimError>;
-        let cases: [(AxisPauli, AxisPauli, NamedGate); 9] = [
-            (pauli_x, pauli_x, TableauSimulator::xcx),
-            (pauli_x, pauli_y, TableauSimulator::xcy),
-            (pauli_x, pauli_z, TableauSimulator::xcz),
-            (pauli_y, pauli_x, TableauSimulator::ycx),
-            (pauli_y, pauli_y, TableauSimulator::ycy),
-            (pauli_y, pauli_z, TableauSimulator::ycz),
-            (pauli_z, pauli_x, TableauSimulator::zcx),
-            (pauli_z, pauli_y, TableauSimulator::zcy),
-            (pauli_z, pauli_z, TableauSimulator::zcz),
-        ];
-
-        for (control, target, named_gate) in cases {
-            let mut generic = TableauSimulator::with_seed(2, 0);
-            generic.h(0);
-            generic.s(0);
-            generic.h(1);
-            generic.sqrt_x(1);
-            let mut named = generic.clone();
-
-            generic
-                .controlled_pauli(&control(2, 0), &target(2, 1))
-                .expect("axes on distinct qubits commute");
-            named_gate(&mut named, 0, 1).expect("qubits are distinct");
-
-            assert_same_state(&generic.state_vector(), &named.state_vector());
-        }
-    }
-
-    #[test]
-    fn ccz_flips_only_the_all_one_amplitude() {
-        let mut sim = TableauSimulator::with_seed(3, 0);
-        for q in 0..3 {
-            sim.h(q);
-        }
-        sim.ccz(0, 1, 2).expect("distinct qubits");
-
-        let mut expected = vec![Complex64::new(FRAC_1_SQRT_2.powi(3), 0.0); 8];
-        expected[7] = -expected[7];
-        assert_same_state(&sim.state_vector(), &expected);
-    }
-
+    /// A signed observable is a legal measurement; an imaginary one is not an
+    /// observable at all, and rejecting it must not have grown the register.
     #[test]
     fn signed_observables_work_and_non_hermitian_inputs_do_not_grow() {
         let mut sim = TableauSimulator::with_seed(1, 0);
@@ -2231,19 +2177,252 @@ mod tests {
         assert_eq!(sim.num_qubits(), 1);
     }
 
+    /// A signed axis is a distinct controlled operation, not a global phase, so
+    /// the frame update refuses it rather than silently dropping the sign.
     #[test]
-    fn postselection_recompresses_to_the_selected_state() {
-        for outcome in [false, true] {
-            let mut sim = TableauSimulator::with_seed(1, 0);
-            sim.h(0);
-            sim.postselect_z(0, outcome)
-                .expect("both Hadamard branches are reachable");
-            let expected = if outcome {
-                [Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)]
-            } else {
-                [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)]
-            };
-            assert_same_state(&sim.state_vector(), &expected);
+    fn controlled_paulis_reject_signed_axes() {
+        let mut sim = TableauSimulator::with_seed(2, 0);
+        assert_eq!(
+            sim.controlled_pauli(&neg(pauli_z(2, 0)), &pauli_x(2, 1)),
+            Err(SimError::InvalidControlledPauli)
+        );
+        assert_eq!(
+            sim.controlled_pauli(&pauli_z(2, 0), &neg(pauli_x(2, 1))),
+            Err(SimError::InvalidControlledPauli)
+        );
+    }
+
+    #[test]
+    fn measurement_can_drive_external_control_flow() {
+        let mut sim = TableauSimulator::with_seed(2, 7);
+        sim.h(0);
+        sim.cx(0, 1).expect("distinct qubits");
+        if sim.measure(0).expect("measurement succeeds").outcome {
+            sim.x(1);
         }
+        let second = sim.measure(1).expect("measurement succeeds");
+        assert!(!second.outcome);
+        assert!(second.deterministic);
+    }
+
+    #[test]
+    fn pauli_rotation_and_expectation_use_existing_pauli_strings() {
+        let mut sim = TableauSimulator::with_seed(1, 0);
+        sim.h(0);
+        sim.t_pauli(&pauli_z(1, 0), false)
+            .expect("rotation succeeds");
+        let x = sim
+            .peek_observable_expectation(&pauli_string("X").expect("valid Pauli"))
+            .expect("X is in range");
+        assert!((x - FRAC_1_SQRT_2).abs() < TOL);
+    }
+
+    #[test]
+    fn deterministic_measurement_pruning_error_is_transactional() {
+        let mut sim = TableauSimulator::with_seed(1, 0);
+        sim.set_prune_epsilon(0.7);
+        let words = sim.core.words;
+        {
+            let terms = sim.amps.narrow();
+            terms.map.clear();
+            terms
+                .map
+                .insert(Key::zeros(words), Complex64::new(0.6, 0.0));
+            terms.map.insert(
+                Key::mask_from_support(words, [0].into_iter()),
+                Complex64::new(0.8, 0.0),
+            );
+        }
+        let amps_before = sim.amps.clone();
+        let diagonal_z = Decomp {
+            a: Key::<1>::zeros(words),
+            b: Key::<1>::mask_from_support(words, [0].into_iter()),
+            phase: 0,
+            zeta: Complex64::new(1.0, 0.0),
+        };
+
+        let TableauSimulator {
+            ref mut core,
+            ref mut amps,
+        } = sim;
+        let err = amps
+            .narrow()
+            .measure_frame_deterministic(core, &diagonal_z, Some(false))
+            .expect_err("the retained 0.6 amplitude is below the pruning threshold");
+        assert_eq!(err, SimError::EmptyStateAfterPruning { epsilon: 0.7 });
+        assert_eq!(sim.amps, amps_before, "failed projection must not commit");
+    }
+
+    /// D01 regression: a `RankOverflow` from `finalize` inside `measure_random`
+    /// must leave the simulator untouched, never half-updated.
+    ///
+    /// The pre-fix ordering advanced the frame `R` (`left_mul_pauli_exp`)
+    /// *before* the fallible `finalize`, so an overflow committed the frame while
+    /// the amplitude map stayed behind — `R` and the map then described different
+    /// states, a corruption no later operation could undo.
+    ///
+    /// Reaching that path needs deliberate setup: a projective measurement never
+    /// grows the compressed rank (confirmed by fuzzing 200k random Clifford+T
+    /// circuits), so it cannot overflow from a within-cap state. We build a valid
+    /// rank-4 state, then drop `rank_cap` beneath the post-measurement rank so
+    /// `finalize` rejects the already-computed map.
+    #[test]
+    fn measure_random_rank_overflow_leaves_state_unchanged() {
+        // `h; t` per qubit gives a rank-4 magic state; `Z_0` measures the
+        // Hadamard-rotated qubit 0, which is off-diagonal (random) in the frame.
+        let observable = PauliString::single(2, 0, Pauli::Z);
+        let build = || {
+            let mut sim = TableauSimulator::with_seed(2, 0);
+            sim.h(0);
+            sim.t(0).expect("off-diagonal T stays within the cap");
+            sim.h(1);
+            sim.t(1).expect("off-diagonal T stays within the cap");
+            sim
+        };
+
+        // Only the random branch (`a != 0`) runs `finalize`; assert we are on it.
+        let dry_run = build();
+        let d = dry_run
+            .core
+            .decompose::<Key<1>>(&observable)
+            .expect("Z is Hermitian");
+        assert!(
+            !d.a.is_zero(),
+            "test must exercise the random-measurement branch"
+        );
+
+        // Learn the post-measurement rank with a generous cap — the
+        // exact label count `finalize` rejects once the cap is lowered below it.
+        let mut dry_run = dry_run;
+        dry_run
+            .postselect_observable(&observable, false)
+            .expect("+1 outcome is achievable");
+        let post_rank = dry_run.rank();
+        assert!(
+            post_rank >= 2,
+            "need a post-rank a cap can sit below, got {post_rank}"
+        );
+
+        // Real run: cap one below `post_rank` forces the overflow. Snapshot the
+        // frame and map first so we can prove the failure changed neither.
+        let mut sim = build();
+        sim.set_rank_cap(post_rank - 1);
+        let frame_before = sim.core.r.clone();
+        let amps_before = sim.amps.clone();
+
+        let err = sim
+            .postselect_observable(&observable, false)
+            .expect_err("the lowered cap must overflow");
+        assert_eq!(
+            err,
+            SimError::RankOverflow {
+                rank: post_rank,
+                cap: post_rank - 1,
+            }
+        );
+        assert_eq!(
+            sim.core.r, frame_before,
+            "R must be untouched when finalize errors"
+        );
+        assert_eq!(
+            sim.amps, amps_before,
+            "amps must be untouched when finalize errors"
+        );
+    }
+
+    #[test]
+    fn ccz_rank_overflow_leaves_state_unchanged() {
+        let mut sim = TableauSimulator::with_seed(2, 0);
+        sim.set_rank_cap(2);
+        for q in 0..2 {
+            sim.h(q);
+        }
+        let qubits_before = sim.num_qubits();
+        let frame_before = sim.core.r.clone();
+        let amps_before = sim.amps.clone();
+
+        assert_eq!(
+            sim.ccz(0, 1, 2),
+            Err(SimError::RankOverflow { rank: 4, cap: 2 })
+        );
+        assert_eq!(sim.num_qubits(), qubits_before);
+        assert_eq!(sim.core.r, frame_before);
+        assert_eq!(sim.amps, amps_before);
+    }
+
+    /// The `&self` reads cannot grow the register, so they must reject a qubit
+    /// past it rather than silently answering for one that does not exist.
+    #[test]
+    fn peeks_reject_support_outside_live_register() {
+        let sim = TableauSimulator::with_seed(1, 0);
+        let out_of_range = Err(SimError::QubitIndexOutOfRange {
+            index: 1,
+            num_qubits: 1,
+        });
+        assert_eq!(
+            sim.peek_observable_expectation(&PauliString::single(2, 1, Pauli::Z)),
+            out_of_range
+        );
+        assert_eq!(sim.peek_z(1), out_of_range);
+        assert_eq!(sim.peek_x(1), out_of_range);
+        assert_eq!(sim.peek_y(1), out_of_range);
+    }
+
+    #[test]
+    fn invalid_operands_do_not_mutate_or_grow() {
+        let mut sim = TableauSimulator::with_seed(1, 0);
+        sim.x(0);
+        let frame_before = sim.core.r.clone();
+        let amps_before = sim.amps.clone();
+
+        assert_eq!(sim.cx(5, 5), Err(SimError::RepeatedQubit(5)));
+        assert_eq!(sim.cz(6, 6), Err(SimError::RepeatedQubit(6)));
+
+        // Two distinct axes on one qubit anticommute.
+        let control = PauliString::single(9, 8, Pauli::X);
+        let target = PauliString::single(9, 8, Pauli::Z);
+        assert_eq!(
+            sim.controlled_pauli(&control, &target),
+            Err(SimError::NonCommutingControlledPaulis)
+        );
+
+        assert_eq!(sim.num_qubits(), 1);
+        assert_eq!(sim.core.r, frame_before);
+        assert_eq!(sim.amps, amps_before);
+    }
+
+    /// The label width and the frame's row width come from two separate
+    /// rounding rules — `Width::for_words` in `label.rs` and `words_for` in
+    /// `frame.rs`, which cannot share code because the frame is compiled
+    /// standalone by `tests/frame_differential.rs`. They must agree, or the
+    /// masks the decomposition writes are the wrong length and `preimage_into`
+    /// asserts. This pins both, at every class boundary.
+    #[test]
+    fn width_class_tracks_the_register() {
+        for (n, want) in [
+            (1usize, Width::W1),
+            (64, Width::W1),
+            (65, Width::W2),
+            (128, Width::W2),
+            (129, Width::W4),
+            (256, Width::W4),
+            (257, Width::W8),
+            (512, Width::W8),
+            (513, Width::Wide),
+        ] {
+            let sim = TableauSimulator::with_seed(n, 0);
+            assert_eq!(sim.amps.width(), want, "n = {n}");
+            assert_eq!(sim.core.words, sim.core.r.words(), "n = {n}");
+        }
+    }
+
+    /// `1usize << 64` wraps rather than trapping in a release build, so an
+    /// unchecked reconstruction handed back a *one*-amplitude vector for a
+    /// 64-qubit register — a wrong answer with no diagnostic. It has to fail,
+    /// and fail the same way in both profiles.
+    #[test]
+    #[should_panic(expected = "fits a usize")]
+    fn state_vector_refuses_a_register_it_cannot_index() {
+        let _ = TableauSimulator::with_seed(64, 0).state_vector();
     }
 }

@@ -62,10 +62,30 @@ Known issues in SOFT's benchmark harness — do not reproduce them:
   materializes full bit-packed detector output while Clifft/SymFT return
   aggregate counters — different output-contract work, caveat it in results.
 
+## `tableau_simulator`
+
+`TableauSimulator` is a second, independent product of this crate: a procedural
+stim-`TableauSimulator`-style Clifford+T engine (Clifford frame + sparse
+amplitude map over destabilizer-coset labels), used by the `bloc` workspace as
+its verification engine. It shares the crate's `PauliString` but **not** its
+frame — `tableau_simulator::frame` is its own flat, const-generic-width tableau,
+which measured 1.7–3.9x faster than routing it through `frames::CliffordFrame`
+on Clifford streams, T-driven rank growth, and measurement.
+
+- Keep its public surface stim-named; the Clifford+T extension (`t`, `t_pauli`,
+  `ccz`, `rank`, `apply_batch`) keeps bloc's spelling.
+- `tableau_simulator::batch` is the replay path: consumers that run one op
+  sequence per shot build an `Instruction` stream once instead of rebuilding
+  `PauliString`s per shot.
+- `benches/{simulator,batch}.rs` and `examples/sim_profile.rs` cover it;
+  `tests/frame_differential.rs` pins the frame's sign conventions against
+  `paulimer`, a dev-dependency that must never reach the built library.
+
 ## Toolchain choices
 
 - Stable Rust only.
-- CLI argument parsing: `clap` with derive macros.
+- CLI argument parsing: `clap` with derive macros, behind the default `cli`
+  feature so library consumers (`default-features = false`) do not link it.
 - SIMD: `fearless_simd` (or comparable stable-toolchain SIMD crate).
 - GPU: `cuda-oxide` or `cutile-rs` (NVlabs).
 - CPU profiling: `perf` (see linux-perf skill).
