@@ -159,15 +159,9 @@ macro_rules! by_width {
 /// this file on its own and so it may not import from a sibling module;
 /// `mod.rs` borrows it from here rather than keeping a second copy.
 #[inline]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn has_popcnt() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        std::arch::is_x86_feature_detected!("popcnt")
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
+    std::arch::is_x86_feature_detected!("popcnt")
 }
 
 /// Row index of `R†·X_qubit·R`.

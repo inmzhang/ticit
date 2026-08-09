@@ -65,7 +65,9 @@ mod label;
 pub use batch::{BatchOutcome, Gate1Q, Instruction};
 pub use error::SimError;
 
-use frame::{Axis, Frame, PauliWords, RowPauli, has_popcnt};
+#[cfg(target_arch = "x86_64")]
+use frame::has_popcnt;
+use frame::{Axis, Frame, PauliWords, RowPauli};
 use label::{Key, Label, LabelKey, Width};
 
 /// The frame's view of a [`PauliString`] — its x/z words, borrowed.
