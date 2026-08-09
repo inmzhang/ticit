@@ -27,6 +27,7 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --target ${{ matrix.target }}
       - run: rustup default stable
+      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: rustc -vV
       - run: cargo fmt --all -- --check
