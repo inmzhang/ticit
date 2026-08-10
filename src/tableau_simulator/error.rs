@@ -9,6 +9,18 @@
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SimError {
+    /// A probability was NaN or outside the inclusive unit interval.
+    #[error("probability {0} must be between 0 and 1")]
+    InvalidProbability(f64),
+
+    /// A categorical channel had mismatched alternatives or total mass above one.
+    #[error("invalid Pauli channel probability distribution")]
+    InvalidProbabilityDistribution,
+
+    /// A Pauli rotation angle was not finite.
+    #[error("Pauli rotation angle {0} must be finite")]
+    InvalidRotationAngle(f64),
+
     /// Pruning removed every amplitude and would produce a zero state.
     #[error("prune epsilon {epsilon} removed every amplitude")]
     EmptyStateAfterPruning {
@@ -16,7 +28,7 @@ pub enum SimError {
         epsilon: f64,
     },
 
-    /// A `T` or measurement pushed the live-label count past the configured cap.
+    /// A Pauli rotation or measurement pushed the live-label count past the cap.
     ///
     /// Stabilizer rank grows by at most a factor of two per `T`, so this bounds
     /// the exponential blow-up of magic-heavy circuits.

@@ -6,7 +6,7 @@ pub(crate) mod parser;
 
 use std::path::Path;
 
-use self::ir::{CircuitDetector, CircuitObservableInclude, QuantumCircuit};
+pub use self::ir::Circuit;
 use self::lowering::{CircuitLoweringResult, lower_circuit_to_factored};
 pub(crate) use self::parser::{parse_ticit_circuit_file, parse_ticit_circuit_text};
 use crate::errors::{Result, TicitError};
@@ -19,24 +19,27 @@ use crate::planner::plan_factored_updates;
 use crate::sampler::prepared::{Sampler, SamplerOptions};
 use crate::symbolic::{SymbolicBool, SymbolicBoolEvaluationPlan, xor_bool};
 
-/// A parsed `.ticit` circuit ready to compile for batch sampling.
+/// Sampler-specific lowering of a [`Circuit`].
 #[derive(Clone, Debug)]
-pub struct Circuit {
-    pub(crate) state: FrameFactoredState,
-    pub(crate) measurement_records: Vec<SymbolicBool>,
-    pub(crate) detectors: Vec<CircuitDetector>,
-    pub(crate) observables: Vec<CircuitObservableInclude>,
-    pub(crate) expectation_values: usize,
+struct LoweredCircuit {
+    state: FrameFactoredState,
+    measurement_records: Vec<SymbolicBool>,
+    detectors: Vec<LoweredDetector>,
+}
+
+#[derive(Clone, Debug)]
+struct LoweredDetector {
+    records: Vec<usize>,
+    discard: bool,
+    after_pending_operation: usize,
 }
 
 impl Circuit {
-    /// Parses a circuit from `.ticit` source text and lowers it into ticit's
-    /// symbolic frame representation.
+    /// Parses `.ticit` source text into a flattened circuit.
     ///
     /// # Errors
     ///
-    /// Returns [`TicitError::Parse`] for malformed source and
-    /// [`TicitError::Unsupported`] for a valid instruction ticit cannot execute.
+    /// Returns [`TicitError::Parse`] for malformed source.
     ///
     /// # Examples
     ///
@@ -50,25 +53,25 @@ impl Circuit {
     /// # Ok::<(), ticit::TicitError>(())
     /// ```
     pub fn from_text(text: &str) -> Result<Self> {
-        lowered_circuit(parse_ticit_circuit_text(text)?)
+        parse_ticit_circuit_text(text)
     }
 
-    /// Parses and lowers a circuit from a UTF-8 `.ticit` file.
+    /// Parses a UTF-8 `.ticit` file into a flattened circuit.
     ///
     /// # Errors
     ///
-    /// Returns [`TicitError::Io`] if the file cannot be read, or the same parse
-    /// and lowering errors as [`from_text`](Self::from_text).
+    /// Returns [`TicitError::Io`] if the file cannot be read, or
+    /// [`TicitError::Parse`] for malformed source.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        lowered_circuit(parse_ticit_circuit_file(path)?)
+        parse_ticit_circuit_file(path)
     }
 
-    /// Compiles this circuit into a reusable batch sampler.
+    /// Lowers and compiles this circuit into a reusable batch sampler.
     ///
     /// # Errors
     ///
-    /// Returns an error if the circuit cannot be planned, an option overflows
-    /// an internal index, or the required active state is unsupported.
+    /// Returns an error if lowering or planning fails, an option overflows an
+    /// internal index, or the required active state is unsupported.
     pub fn compile(&self, options: SamplerOptions) -> Result<Sampler> {
         Sampler::new(self, options)
     }
@@ -76,13 +79,13 @@ impl Circuit {
     /// Number of qubits named by the circuit.
     #[must_use]
     pub fn qubit_count(&self) -> usize {
-        self.state.n
+        self.nqubits
     }
 
     /// Number of measurement results written to `rec`.
     #[must_use]
     pub fn measurement_record_count(&self) -> usize {
-        self.measurement_records.len()
+        self.nrecords
     }
 
     /// Number of `DETECTOR` and `DISCARD` declarations.
@@ -105,7 +108,7 @@ impl Circuit {
     /// Number of expectation values produced by `EXP_VAL` instructions.
     #[must_use]
     pub fn expectation_value_count(&self) -> usize {
-        self.expectation_values
+        self.nexpvals
     }
 
     /// Whether at least one detector is declared as a `DISCARD` check.
@@ -126,29 +129,33 @@ impl Circuit {
 /// Translates detector positions from instruction indices to pending-operation
 /// prefixes through the lowering's prefix table.
 fn detectors_with_lowered_positions(
-    circuit: &QuantumCircuit,
+    circuit: &Circuit,
     lowered: &CircuitLoweringResult,
-) -> Result<Vec<CircuitDetector>> {
-    let mut detectors = circuit.detectors.clone();
-    for detector in &mut detectors {
-        let counts = &lowered.instruction_pending_operation_counts;
-        if detector.after_instruction >= counts.len() {
-            return Err(TicitError::new("detector source position is out of range"));
-        }
-        detector.after_pending_operation = counts[detector.after_instruction];
-    }
-    Ok(detectors)
+) -> Result<Vec<LoweredDetector>> {
+    circuit
+        .detectors
+        .iter()
+        .map(|detector| {
+            let counts = &lowered.instruction_pending_operation_counts;
+            if detector.after_instruction >= counts.len() {
+                return Err(TicitError::new("detector source position is out of range"));
+            }
+            Ok(LoweredDetector {
+                records: detector.records.clone(),
+                discard: detector.discard,
+                after_pending_operation: counts[detector.after_instruction],
+            })
+        })
+        .collect()
 }
 
-fn lowered_circuit(circuit: QuantumCircuit) -> Result<Circuit> {
-    let lowered = lower_circuit_to_factored(&circuit)?;
-    let detectors = detectors_with_lowered_positions(&circuit, &lowered)?;
-    Ok(Circuit {
+fn lowered_circuit(circuit: &Circuit) -> Result<LoweredCircuit> {
+    let lowered = lower_circuit_to_factored(circuit)?;
+    let detectors = detectors_with_lowered_positions(circuit, &lowered)?;
+    Ok(LoweredCircuit {
         state: lowered.state,
         measurement_records: lowered.measurement_records,
         detectors,
-        observables: circuit.observables,
-        expectation_values: circuit.nexpvals,
     })
 }
 
@@ -158,11 +165,11 @@ fn lowered_circuit(circuit: QuantumCircuit) -> Result<Circuit> {
 
 /// XOR of the referenced measurement-record outcomes.
 fn detector_expression(
-    detector: &CircuitDetector,
+    records: &[usize],
     measurement_records: &[SymbolicBool],
 ) -> Result<SymbolicBool> {
     let mut out = SymbolicBool::default();
-    for &record in &detector.records {
+    for &record in records {
         if record == 0 || record > measurement_records.len() {
             return Err(TicitError::new(
                 "detector references an out-of-range measurement record",
@@ -202,7 +209,7 @@ fn instruction_checkpoint_for_pending_prefix(
 /// reduction pass over the enlarged stream).
 fn insert_detector_events(
     program: FactoredInstructionProgram,
-    detectors: &[CircuitDetector],
+    detectors: &[LoweredDetector],
     measurement_records: &[SymbolicBool],
     postselection_mask: &[u8],
 ) -> Result<FactoredInstructionProgram> {
@@ -211,7 +218,7 @@ fn insert_detector_events(
     }
     let mut events: Vec<Vec<RecordDetector>> = vec![Vec::new(); program.instructions.len() + 1];
     for (idx, detector) in detectors.iter().enumerate() {
-        let outcome = detector_expression(detector, measurement_records)?;
+        let outcome = detector_expression(&detector.records, measurement_records)?;
         let instruction = RecordDetector {
             outcome_plan: SymbolicBoolEvaluationPlan::new(&outcome),
             outcome,
@@ -254,6 +261,7 @@ pub(crate) fn plan_circuit(
     parsed: &Circuit,
     postselection_mask: &[u8],
 ) -> Result<FactoredInstructionProgram> {
+    let parsed = lowered_circuit(parsed)?;
     let mut pending = PendingFactoredState::from_frame_state(parsed.state.clone());
     let detector_prefixes: Vec<usize> = parsed
         .detectors

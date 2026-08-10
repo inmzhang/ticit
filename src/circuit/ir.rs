@@ -160,9 +160,6 @@ pub struct CircuitDetector {
     /// Number of instructions emitted before this detector, i.e. the point in
     /// the instruction stream at which its records are all available.
     pub after_instruction: usize,
-    /// Same position expressed in lowered pending operations. Filled in by the
-    /// lowering pass; zero until then.
-    pub after_pending_operation: usize,
     /// Whether this detector came from a `DISCARD` declaration.
     pub discard: bool,
 }
@@ -176,18 +173,21 @@ pub struct CircuitObservableInclude {
     pub line: usize,
 }
 
-/// A fully flattened circuit.
+/// A parsed, fully flattened `.ticit` circuit.
+///
+/// `REPEAT` blocks are expanded and annotations are separated from executable
+/// instructions. Sampler-specific lowering happens in [`compile`](Self::compile).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct QuantumCircuit {
-    pub nqubits: usize,
-    pub nrecords: usize,
-    pub nexpvals: usize,
-    pub instructions: Vec<CircuitInstruction>,
-    pub detectors: Vec<CircuitDetector>,
-    pub observables: Vec<CircuitObservableInclude>,
+pub struct Circuit {
+    pub(crate) nqubits: usize,
+    pub(crate) nrecords: usize,
+    pub(crate) nexpvals: usize,
+    pub(crate) instructions: Vec<CircuitInstruction>,
+    pub(crate) detectors: Vec<CircuitDetector>,
+    pub(crate) observables: Vec<CircuitObservableInclude>,
 }
 
-impl QuantumCircuit {
+impl Circuit {
     /// Number of logical observables, defined as the largest declared index
     /// plus one — not the number of `OBSERVABLE_INCLUDE` instructions, several
     /// of which may contribute to the same observable.

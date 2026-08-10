@@ -1,8 +1,8 @@
-//! Stabilizer-frame Clifford+T simulator.
+//! Stabilizer-frame Clifford and Pauli-rotation simulator.
 //!
 //! # State representation
 //!
-//! The engine tracks a single Clifford frame `R` (a [`Frame`], the owned
+//! The engine tracks a single Clifford frame `R` (a `Frame`, the owned
 //! preimage tableau) and a sparse complex amplitude map over destabilizer-coset
 //! labels. Writing
 //! `S_i = R Z_i R† = image_z(i)` (stabilizers) and `D_i = R X_i R† = image_x(i)`
@@ -36,12 +36,12 @@
 //! # Width dispatch
 //!
 //! Everything that sweeps the amplitude map — `T`, both measurement branches,
-//! the expectation reads — is generic over the label type ([`label::LabelKey`]) rather
-//! than written against one runtime-width label. [`Amps`] holds the single
+//! the expectation reads — is generic over the label type (`LabelKey`) rather
+//! than written against one runtime-width label. `Amps` holds the single
 //! specialization the register calls for, and each entry point matches on it
 //! *once* and hands the whole operation to a monomorphized body; nothing
-//! dispatches per term. [`Frame`] does the same for its row width, off the same
-//! rounding rule. See [`label`] for why the width is worth making a type.
+//! dispatches per term. `Frame` does the same for its row width, off the same
+//! rounding rule. The private `label` module documents why width is a type.
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::hash::{BuildHasher, Hasher, RandomState};
@@ -117,7 +117,7 @@ pub struct MeasureResult {
     pub deterministic: bool,
 }
 
-/// A stim-`TableauSimulator`-style procedural Clifford+T simulator.
+/// A stim-`TableauSimulator`-style procedural quantum-state simulator.
 ///
 /// Apply operations one at a time, read [`measure`](Self::measure) outcomes,
 /// branch on them (feedforward), and continue. See the [module docs](self) for
@@ -138,7 +138,7 @@ pub struct MeasureResult {
 /// to sample from it, so reporting it is free), and observables are
 /// [`PauliString`]s.
 ///
-/// The Clifford+T extension keeps this workspace's names — [`t`](Self::t),
+/// The Pauli-rotation extension keeps this workspace's names — [`t`](Self::t),
 /// [`t_dag`](Self::t_dag), [`t_pauli`](Self::t_pauli), [`ccz`](Self::ccz) and
 /// [`rank`](Self::rank) — as does the batched
 /// [`apply_batch`](Self::apply_batch) instruction path.
@@ -170,7 +170,7 @@ struct Core {
     /// measurement projection. Exact arithmetic preserves the norm, so this only
     /// removes terms that cancelled to within rounding.
     prune_epsilon: f64,
-    /// Maximum live-label count. A `T`/measurement that would exceed it fails
+    /// Maximum live-label count. A rotation/measurement that would exceed it fails
     /// with [`SimError::RankOverflow`] rather than exhausting memory.
     rank_cap: usize,
 }
@@ -808,6 +808,28 @@ impl TableauSimulator {
         })
     }
 
+    /// Apply `exp(-i * kernel_angle * axis)` about a Pauli axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimError::InvalidRotationAngle`] for a non-finite angle,
+    /// [`SimError::NonHermitianPauli`] for a non-observable axis, or the same
+    /// rank and pruning errors as [`t_pauli`](Self::t_pauli).
+    pub fn pauli_rotation(
+        &mut self,
+        axis: &PauliString,
+        kernel_angle: f64,
+    ) -> Result<(), SimError> {
+        if !kernel_angle.is_finite() {
+            return Err(SimError::InvalidRotationAngle(kernel_angle));
+        }
+        self.ensure_for_observable(axis)?;
+        with_terms!(self, |core, terms| {
+            let d = core.decompose(axis)?;
+            terms.rotate_decomposed(core, &d, kernel_angle)
+        })
+    }
+
     /// `T = T_Z` on qubit `q`.
     ///
     /// # Errors
@@ -1441,17 +1463,48 @@ impl<K: LabelKey> Terms<K> {
     /// the rotation lives, shared by [`TableauSimulator::t_pauli`] and the basis-axis
     /// entry points that never build a `PauliString`.
     fn t_decomposed(&mut self, core: &Core, d: &Decomp<K>, adjoint: bool) -> Result<(), SimError> {
-        #[cfg(target_arch = "x86_64")]
-        if has_popcnt() {
-            // SAFETY: `has_popcnt` is the CPUID probe for exactly the feature
-            // the callee enables.
-            #[allow(unsafe_code)] // the statement, not the function
-            return unsafe { self.t_decomposed_popcnt(core, d, adjoint) };
-        }
-        self.t_decomposed_inner(core, d, adjoint)
+        let cos = (PI / 8.0).cos();
+        let sin = (PI / 8.0).sin();
+        self.rotation_decomposed(
+            core,
+            d,
+            cos,
+            Complex64::new(0.0, if adjoint { sin } else { -sin }),
+        )
     }
 
-    /// [`t_decomposed`](Self::t_decomposed)'s `popcnt`-enabled twin. See
+    /// Arbitrary-angle counterpart of [`t_decomposed`](Self::t_decomposed).
+    fn rotate_decomposed(
+        &mut self,
+        core: &Core,
+        d: &Decomp<K>,
+        kernel_angle: f64,
+    ) -> Result<(), SimError> {
+        self.rotation_decomposed(
+            core,
+            d,
+            kernel_angle.cos(),
+            Complex64::new(0.0, -kernel_angle.sin()),
+        )
+    }
+
+    fn rotation_decomposed(
+        &mut self,
+        core: &Core,
+        d: &Decomp<K>,
+        cos: f64,
+        branch: Complex64,
+    ) -> Result<(), SimError> {
+        #[cfg(target_arch = "x86_64")]
+        if has_popcnt() {
+            // SAFETY: `has_popcnt` probes exactly the enabled target feature.
+            #[allow(unsafe_code)]
+            return unsafe { self.rotation_decomposed_popcnt(core, d, cos, branch) };
+        }
+        self.rotation_decomposed_inner(core, d, cos, branch)
+    }
+
+    /// [`rotation_decomposed`](Self::rotation_decomposed)'s `popcnt` twin. See
     /// [`frame::has_popcnt`] for why these exist.
     ///
     /// The body must be `inline(always)`: a `#[target_feature]` function only
@@ -1463,27 +1516,24 @@ impl<K: LabelKey> Terms<K> {
     /// alone.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "popcnt")]
-    fn t_decomposed_popcnt(
+    fn rotation_decomposed_popcnt(
         &mut self,
         core: &Core,
         d: &Decomp<K>,
-        adjoint: bool,
+        cos: f64,
+        branch: Complex64,
     ) -> Result<(), SimError> {
-        self.t_decomposed_inner(core, d, adjoint)
+        self.rotation_decomposed_inner(core, d, cos, branch)
     }
 
     #[inline(always)]
-    fn t_decomposed_inner(
+    fn rotation_decomposed_inner(
         &mut self,
         core: &Core,
         d: &Decomp<K>,
-        adjoint: bool,
+        cos: f64,
+        branch: Complex64,
     ) -> Result<(), SimError> {
-        let cos = (PI / 8.0).cos();
-        let sin = (PI / 8.0).sin();
-        // Non-adjoint uses `−i·sin`; adjoint flips to `+i·sin`.
-        let branch = Complex64::new(0.0, if adjoint { sin } else { -sin });
-
         if d.a.is_zero() {
             return self.t_diagonal(core, d, cos, branch);
         }

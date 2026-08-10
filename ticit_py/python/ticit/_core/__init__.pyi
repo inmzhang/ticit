@@ -110,7 +110,7 @@ class MeasureResult:
 
 class ParseError(builtins.ValueError):
     r"""
-    A circuit failed to parse or lower.
+    A circuit failed to parse.
     """
     ...
 

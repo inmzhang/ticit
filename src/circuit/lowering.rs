@@ -5,8 +5,8 @@
 
 use crate::bits::packed_bits;
 use crate::circuit::ir::{
-    CircuitInstruction, CircuitInstructionKind as Kind, CircuitMeasurementTarget,
-    CircuitPauliProduct, QuantumCircuit,
+    Circuit, CircuitInstruction, CircuitInstructionKind as Kind, CircuitMeasurementTarget,
+    CircuitPauliProduct,
 };
 use crate::errors::{Result, TicitError};
 use crate::factored::{
@@ -783,7 +783,7 @@ fn apply_instruction(acc: &mut Accumulator, instruction: &CircuitInstruction) ->
 }
 
 /// Lowers a parsed circuit into a frame-factored state plus record symbols.
-pub fn lower_circuit_to_factored(circuit: &QuantumCircuit) -> Result<CircuitLoweringResult> {
+pub fn lower_circuit_to_factored(circuit: &Circuit) -> Result<CircuitLoweringResult> {
     let mut acc = Accumulator {
         state: FrameFactoredState::new(circuit.nqubits, 0)?,
         records: Vec::new(),
@@ -816,7 +816,7 @@ mod tests {
     use crate::planner::plan_factored_updates;
     use crate::symbolic::SymbolicCategoricalDistribution;
 
-    fn parsed(text: &str) -> QuantumCircuit {
+    fn parsed(text: &str) -> Circuit {
         parse_ticit_circuit_text(text).expect("test circuit parses")
     }
 
@@ -890,7 +890,8 @@ mod tests {
     fn a_clifford_advances_instructions_but_not_pending_operations() {
         let parsed = parse_ticit_text("M 0\nH 0\nDETECTOR rec[-1]\n").expect("fixture parses");
         assert_eq!(parsed.detectors[0].after_instruction, 2);
-        assert_eq!(parsed.detectors[0].after_pending_operation, 1);
+        let lowered = lower_circuit_to_factored(&parsed).expect("fixture lowers");
+        assert_eq!(lowered.instruction_pending_operation_counts[2], 1);
     }
 
     // ==============================================================================
@@ -1226,8 +1227,8 @@ mod tests {
     #[test]
     fn the_msc_d3_benchmark_circuit_lowers_and_plans() {
         let path = common::msc_d3_circuit();
-        let parsed = crate::circuit::parse_ticit_file(path).expect("msc d3 parses and lowers");
-        let nrecords = parsed.measurement_records.len();
+        let parsed = crate::circuit::parse_ticit_file(path).expect("msc d3 parses");
+        let nrecords = parsed.nrecords;
         let ndetectors = parsed.detectors.len();
         assert!(nrecords > 0 && ndetectors > 0);
         let program = plan_ticit_factored_program(&parsed).expect("msc d3 plans");

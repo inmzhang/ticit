@@ -88,8 +88,8 @@ cargo run -p ticit_py --bin stub_gen
 class ticit.Circuit(stim_text: str = "")
 ```
 
-A parsed and lowered circuit. Constructing a `Circuit` validates the complete
-input but does not allocate sampling workers.
+A parsed, flattened circuit. Lowering and planning happen when `compile()` is
+called.
 
 ### `ticit.Circuit.__init__`
 

@@ -1052,19 +1052,26 @@ mod tests {
         // The Clifford half of `test_extended_clifford_gate_directions`. This is the
         // only coverage `left_cz`, `left_swap` and `left_sdg` get.
         let parsed_match = |name: &str, native: &str, reference: &str| {
-            let native = crate::circuit::parse_ticit_text(native).expect("native circuit parses");
-            let reference =
-                crate::circuit::parse_ticit_text(reference).expect("reference circuit parses");
+            let native = crate::circuit::lowering::lower_circuit_to_factored(
+                &crate::circuit::parse_ticit_text(native).expect("native circuit parses"),
+            )
+            .expect("native circuit lowers")
+            .state;
+            let reference = crate::circuit::lowering::lower_circuit_to_factored(
+                &crate::circuit::parse_ticit_text(reference).expect("reference circuit parses"),
+            )
+            .expect("reference circuit lowers")
+            .state;
             assert!(
-                native.state.pending_operations.is_empty(),
+                native.pending_operations.is_empty(),
                 "{name} is Clifford-only"
             );
             assert!(
-                reference.state.pending_operations.is_empty(),
+                reference.pending_operations.is_empty(),
                 "{name} decomposition is Clifford-only"
             );
             assert_eq!(
-                native.state.clifford, reference.state.clifford,
+                native.clifford, reference.clifford,
                 "{name} parsed decomposition"
             );
         };

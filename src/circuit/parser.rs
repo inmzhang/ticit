@@ -20,8 +20,8 @@ use std::f64::consts::PI;
 use std::path::Path;
 
 use crate::circuit::ir::{
-    CircuitDetector, CircuitFeedbackTarget, CircuitInstruction, CircuitInstructionKind,
-    CircuitMeasurementTarget, CircuitObservableInclude, CircuitPauliProduct, QuantumCircuit,
+    Circuit, CircuitDetector, CircuitFeedbackTarget, CircuitInstruction, CircuitInstructionKind,
+    CircuitMeasurementTarget, CircuitObservableInclude, CircuitPauliProduct,
 };
 use crate::errors::{Result, TicitError};
 use crate::pauli::{PauliString, pauli_identity, pauli_x, pauli_y, pauli_z};
@@ -31,7 +31,7 @@ use crate::pauli::{PauliString, pauli_identity, pauli_x, pauli_y, pauli_z};
 // ==============================================================================
 
 /// Parses a Ticit circuit from a sequence of lines.
-pub fn parse_ticit_circuit_lines<S: AsRef<str>>(lines: &[S]) -> Result<QuantumCircuit> {
+pub fn parse_ticit_circuit_lines<S: AsRef<str>>(lines: &[S]) -> Result<Circuit> {
     let mut pos = 0;
     let nodes = parse_nodes(lines, &mut pos, false)?;
     let mut builder = TicitCircuitBuilder::default();
@@ -41,13 +41,13 @@ pub fn parse_ticit_circuit_lines<S: AsRef<str>>(lines: &[S]) -> Result<QuantumCi
 }
 
 /// Parses a Ticit circuit from source text.
-pub fn parse_ticit_circuit_text(text: &str) -> Result<QuantumCircuit> {
+pub fn parse_ticit_circuit_text(text: &str) -> Result<Circuit> {
     let lines: Vec<&str> = text.lines().collect();
     parse_ticit_circuit_lines(&lines)
 }
 
 /// Parses a Ticit circuit from a file.
-pub fn parse_ticit_circuit_file(path: impl AsRef<Path>) -> Result<QuantumCircuit> {
+pub fn parse_ticit_circuit_file(path: impl AsRef<Path>) -> Result<Circuit> {
     let path = path.as_ref();
     let text = std::fs::read_to_string(path).map_err(|source| TicitError::io(path, source))?;
     parse_ticit_circuit_text(&text)
@@ -955,7 +955,7 @@ fn two_qubit_clifford_kind(op: &str) -> Option<CircuitInstructionKind> {
 // ==============================================================================
 
 struct TicitCircuitBuilder {
-    circuit: QuantumCircuit,
+    circuit: Circuit,
     coord_shift: Vec<f64>,
     correlated_error_products: Vec<CircuitPauliProduct>,
     correlated_error_probabilities: Vec<f64>,
@@ -967,7 +967,7 @@ struct TicitCircuitBuilder {
 impl Default for TicitCircuitBuilder {
     fn default() -> Self {
         Self {
-            circuit: QuantumCircuit::default(),
+            circuit: Circuit::default(),
             coord_shift: Vec::new(),
             correlated_error_products: Vec::new(),
             correlated_error_probabilities: Vec::new(),
@@ -1370,7 +1370,6 @@ fn append_instruction(
                 coords: coords_with_shift(&instruction.parens, &builder.coord_shift),
                 line,
                 after_instruction: builder.circuit.instructions.len(),
-                after_pending_operation: 0,
                 discard: op == "DISCARD",
             });
             return Ok(());
@@ -1685,7 +1684,7 @@ mod circuit_tests {
     /// The C++ suite compares rotation angles to 1e-12; keep the same slack.
     const TOLERANCE: f64 = 1e-12;
 
-    fn parse(text: &str) -> QuantumCircuit {
+    fn parse(text: &str) -> Circuit {
         parse_ticit_circuit_text(text)
             .unwrap_or_else(|error| panic!("{text:?} should parse: {error}"))
     }

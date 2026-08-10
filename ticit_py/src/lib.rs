@@ -18,7 +18,7 @@ pyo3_stub_gen::create_exception!(
     ticit._core,
     ParseError,
     PyValueError,
-    "A circuit failed to parse or lower."
+    "A circuit failed to parse."
 );
 
 fn ticit_error(error: ticit::TicitError) -> PyErr {

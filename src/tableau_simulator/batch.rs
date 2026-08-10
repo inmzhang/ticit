@@ -33,9 +33,12 @@
 //! rotation axis or a measured observable, a Pauli product is just its factors
 //! applied in sequence, so [`Instruction::Pauli`] already spans it.
 
-use crate::{PauliBasis, PauliString};
+use crate::circuit::Circuit;
+use crate::circuit::ir::{CircuitInstructionKind as Kind, CircuitPauliProduct};
+use crate::random::{rand_float, sample_bernoulli};
+use crate::{Pauli, PauliBasis, PauliString, neg};
 
-use super::{MeasureResult, SimError, TableauSimulator};
+use super::{MeasureResult, SimError, TOL, TableauSimulator};
 
 // ==============================================================================
 // Single-qubit Clifford gates
@@ -227,9 +230,41 @@ pub enum Instruction {
         /// `true` selects `T†`.
         adjoint: bool,
     },
+    /// `exp(-i * kernel_angle * axis)` for an arbitrary real angle.
+    PauliRotation {
+        /// Hermitian Pauli rotation axis.
+        axis: PauliString,
+        /// Angle in radians under the kernel convention.
+        kernel_angle: f64,
+    },
     /// Measure a Pauli observable, appending its result to
     /// [`BatchOutcome::records`].
     Measure(PauliString),
+    /// Measure a Pauli observable and independently flip the recorded bit.
+    MeasureWithReadoutError {
+        /// Hermitian observable to measure.
+        observable: PauliString,
+        /// Probability of flipping the classical record after projection.
+        probability: f64,
+    },
+    /// Append a classical record, optionally flipped by Bernoulli noise.
+    Record {
+        /// Record value before noise.
+        value: bool,
+        /// Probability of flipping `value`.
+        flip_probability: f64,
+    },
+    /// Sample at most one Pauli alternative and apply it.
+    RandomPauli {
+        /// Absolute probability of each corresponding alternative.
+        probabilities: Vec<f64>,
+        /// Pauli alternatives; remaining probability means no operation.
+        alternatives: Vec<PauliString>,
+        /// Whether to append a record indicating that an alternative fired.
+        heralded: bool,
+    },
+    /// Read a Pauli expectation value without changing the state.
+    Expectation(PauliString),
     /// Reset a qubit to the `+1` eigenstate of `basis`.
     Reset {
         /// The basis to reset into.
@@ -257,13 +292,448 @@ pub enum Instruction {
 /// What one [`TableauSimulator::apply_batch`] run produced.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BatchOutcome {
-    /// One entry per [`Instruction::Measure`], in batch order.
+    /// Measurement, explicit-record, and herald records in batch order.
     pub records: Vec<MeasureResult>,
+    /// One entry per [`Instruction::Expectation`], in batch order.
+    pub expectation_values: Vec<f64>,
     /// Highest stabilizer rank observed after any instruction, or `0` for an
     /// empty batch. Callers that budget memory against the rank need the peak,
-    /// which a post-batch [`TableauSimulator::rank`] read would miss — a `T` grows the
-    /// rank before a post-selection collapses it back.
+    /// which a post-batch [`TableauSimulator::rank`] read would miss — a Pauli
+    /// rotation can grow the rank before a later measurement collapses it.
     pub max_rank: usize,
+}
+
+fn gate1_for(kind: Kind) -> Option<Gate1Q> {
+    Some(match kind {
+        Kind::H => Gate1Q::H,
+        Kind::HNegXy => Gate1Q::Hnxy,
+        Kind::HNegXz => Gate1Q::Hnxz,
+        Kind::HNegYz => Gate1Q::Hnyz,
+        Kind::HXy => Gate1Q::Hxy,
+        Kind::HYz => Gate1Q::Hyz,
+        Kind::CNegXyz => Gate1Q::Cnxyz,
+        Kind::CNegZyx => Gate1Q::Cnzyx,
+        Kind::CXNegYz => Gate1Q::Cxnyz,
+        Kind::CXyNegZ => Gate1Q::Cxynz,
+        Kind::CXyz => Gate1Q::Cxyz,
+        Kind::CZNegYx => Gate1Q::Cznyx,
+        Kind::CZyNegX => Gate1Q::Czynx,
+        Kind::CZyx => Gate1Q::Czyx,
+        Kind::S => Gate1Q::S,
+        Kind::SDag => Gate1Q::SDag,
+        Kind::SqrtX => Gate1Q::SqrtX,
+        Kind::SqrtXDag => Gate1Q::SqrtXDag,
+        Kind::SqrtY => Gate1Q::SqrtY,
+        Kind::SqrtYDag => Gate1Q::SqrtYDag,
+        Kind::X => Gate1Q::X,
+        Kind::Y => Gate1Q::Y,
+        Kind::Z => Gate1Q::Z,
+        _ => return None,
+    })
+}
+
+fn gate2_for(kind: Kind) -> Option<(PauliBasis, PauliBasis)> {
+    use PauliBasis::{X, Y, Z};
+    Some(match kind {
+        Kind::CX => (Z, X),
+        Kind::CY => (Z, Y),
+        Kind::CZ => (Z, Z),
+        Kind::Xcx => (X, X),
+        Kind::Xcy => (X, Y),
+        Kind::Xcz => (X, Z),
+        Kind::Ycx => (Y, X),
+        Kind::Ycy => (Y, Y),
+        Kind::Ycz => (Y, Z),
+        _ => return None,
+    })
+}
+
+fn push_gate1(out: &mut Vec<Instruction>, gate: Gate1Q, qubit: usize) {
+    out.push(Instruction::Gate1 { gate, qubit });
+}
+
+fn push_gate2(
+    out: &mut Vec<Instruction>,
+    control: PauliBasis,
+    target: PauliBasis,
+    control_qubit: usize,
+    target_qubit: usize,
+) {
+    out.push(Instruction::Gate2 {
+        control,
+        target,
+        control_qubit,
+        target_qubit,
+    });
+}
+
+fn push_cx(out: &mut Vec<Instruction>, control: usize, target: usize) {
+    push_gate2(out, PauliBasis::Z, PauliBasis::X, control, target);
+}
+
+fn push_swap(out: &mut Vec<Instruction>, a: usize, b: usize) {
+    push_cx(out, a, b);
+    push_cx(out, b, a);
+    push_cx(out, a, b);
+}
+
+fn push_sqrt_zz(out: &mut Vec<Instruction>, a: usize, b: usize, adjoint: bool) {
+    push_cx(out, a, b);
+    push_gate1(out, if adjoint { Gate1Q::SDag } else { Gate1Q::S }, b);
+    push_cx(out, a, b);
+}
+
+fn push_sqrt_pair(
+    out: &mut Vec<Instruction>,
+    basis: PauliBasis,
+    a: usize,
+    b: usize,
+    adjoint: bool,
+) {
+    let rotations = match basis {
+        PauliBasis::X => Some((Gate1Q::H, Gate1Q::H)),
+        PauliBasis::Y => Some((Gate1Q::SqrtX, Gate1Q::SqrtXDag)),
+        PauliBasis::Z => None,
+    };
+    if let Some((before, after)) = rotations {
+        push_gate1(out, before, a);
+        push_gate1(out, before, b);
+        push_sqrt_zz(out, a, b, adjoint);
+        push_gate1(out, after, a);
+        push_gate1(out, after, b);
+    } else {
+        push_sqrt_zz(out, a, b, adjoint);
+    }
+}
+
+fn push_pair(out: &mut Vec<Instruction>, kind: Kind, a: usize, b: usize) {
+    if let Some((control, target)) = gate2_for(kind) {
+        push_gate2(out, control, target, a, b);
+        return;
+    }
+    match kind {
+        Kind::Swap => push_swap(out, a, b),
+        Kind::CxSwap => {
+            push_cx(out, a, b);
+            push_swap(out, a, b);
+        }
+        Kind::CzSwap => {
+            push_gate2(out, PauliBasis::Z, PauliBasis::Z, a, b);
+            push_swap(out, a, b);
+        }
+        Kind::SwapCx => {
+            push_swap(out, a, b);
+            push_cx(out, a, b);
+        }
+        Kind::ISwap | Kind::ISwapDag => {
+            push_gate2(out, PauliBasis::Z, PauliBasis::Z, a, b);
+            let phase = if kind == Kind::ISwap {
+                Gate1Q::S
+            } else {
+                Gate1Q::SDag
+            };
+            push_gate1(out, phase, a);
+            push_gate1(out, phase, b);
+            push_swap(out, a, b);
+        }
+        Kind::SqrtXx | Kind::SqrtXxDag => {
+            push_sqrt_pair(out, PauliBasis::X, a, b, kind == Kind::SqrtXxDag);
+        }
+        Kind::SqrtYy | Kind::SqrtYyDag => {
+            push_sqrt_pair(out, PauliBasis::Y, a, b, kind == Kind::SqrtYyDag);
+        }
+        Kind::SqrtZz | Kind::SqrtZzDag => {
+            push_sqrt_pair(out, PauliBasis::Z, a, b, kind == Kind::SqrtZzDag);
+        }
+        _ => unreachable!("called only for two-qubit Clifford kinds"),
+    }
+}
+
+fn product_pauli(product: &CircuitPauliProduct) -> PauliString {
+    if product.inverted {
+        neg(product.pauli.clone())
+    } else {
+        product.pauli.clone()
+    }
+}
+
+fn pauli_from_code(nqubits: usize, qubits: &[usize], mut code: usize) -> PauliString {
+    let mut pauli = PauliString::new(nqubits);
+    for &qubit in qubits.iter().rev() {
+        pauli.set(
+            qubit,
+            match code & 3 {
+                0 => Pauli::I,
+                1 => Pauli::X,
+                2 => Pauli::Y,
+                _ => Pauli::Z,
+            },
+        );
+        code >>= 2;
+    }
+    pauli
+}
+
+fn pauli_channel_alternatives(nqubits: usize, qubits: &[usize]) -> Vec<PauliString> {
+    (1..1usize << (2 * qubits.len()))
+        .map(|code| pauli_from_code(nqubits, qubits, code))
+        .collect()
+}
+
+fn push_random_pauli(
+    out: &mut Vec<Instruction>,
+    probabilities: Vec<f64>,
+    alternatives: Vec<PauliString>,
+    heralded: bool,
+) {
+    out.push(Instruction::RandomPauli {
+        probabilities,
+        alternatives,
+        heralded,
+    });
+}
+
+fn tableau_instructions(circuit: &Circuit) -> Vec<Instruction> {
+    let mut out = Vec::with_capacity(circuit.instructions.len());
+    for instruction in &circuit.instructions {
+        let kind = instruction.kind;
+        if let Some(gate) = gate1_for(kind) {
+            for &qubit in &instruction.qubits {
+                push_gate1(&mut out, gate, qubit);
+            }
+            continue;
+        }
+
+        match kind {
+            Kind::Tick => {}
+            Kind::CX
+            | Kind::CY
+            | Kind::CZ
+            | Kind::Swap
+            | Kind::CxSwap
+            | Kind::CzSwap
+            | Kind::ISwap
+            | Kind::ISwapDag
+            | Kind::SqrtXx
+            | Kind::SqrtXxDag
+            | Kind::SqrtYy
+            | Kind::SqrtYyDag
+            | Kind::SqrtZz
+            | Kind::SqrtZzDag
+            | Kind::SwapCx
+            | Kind::Xcx
+            | Kind::Xcy
+            | Kind::Xcz
+            | Kind::Ycx
+            | Kind::Ycy
+            | Kind::Ycz => {
+                for pair in instruction.qubits.chunks_exact(2) {
+                    push_pair(&mut out, kind, pair[0], pair[1]);
+                }
+            }
+            Kind::T | Kind::TDag => {
+                for &qubit in &instruction.qubits {
+                    out.push(Instruction::T {
+                        basis: PauliBasis::Z,
+                        qubit,
+                        adjoint: kind == Kind::TDag,
+                    });
+                }
+            }
+            Kind::PauliRotation => {
+                for product in &instruction.pauli_products {
+                    out.push(Instruction::PauliRotation {
+                        axis: product_pauli(product),
+                        kernel_angle: instruction.kernel_angle,
+                    });
+                }
+            }
+            Kind::MZ | Kind::MX | Kind::MY | Kind::Mrz | Kind::Mrx | Kind::Mry => {
+                let (basis, reset) = match kind {
+                    Kind::MX | Kind::Mrx => (PauliBasis::X, kind == Kind::Mrx),
+                    Kind::MY | Kind::Mry => (PauliBasis::Y, kind == Kind::Mry),
+                    _ => (PauliBasis::Z, kind == Kind::Mrz),
+                };
+                for target in &instruction.measurement_targets {
+                    let observable =
+                        PauliString::single(circuit.nqubits, target.qubit, Pauli::from(basis));
+                    out.push(Instruction::MeasureWithReadoutError {
+                        observable: if target.inverted {
+                            neg(observable)
+                        } else {
+                            observable
+                        },
+                        probability: instruction.probability,
+                    });
+                    if reset {
+                        out.push(Instruction::Reset {
+                            basis,
+                            qubit: target.qubit,
+                        });
+                    }
+                }
+            }
+            Kind::RZ | Kind::RX | Kind::RY => {
+                let basis = match kind {
+                    Kind::RX => PauliBasis::X,
+                    Kind::RY => PauliBasis::Y,
+                    _ => PauliBasis::Z,
+                };
+                for &qubit in &instruction.qubits {
+                    out.push(Instruction::Reset { basis, qubit });
+                }
+            }
+            Kind::Mpp => {
+                out.extend(instruction.pauli_products.iter().map(|product| {
+                    Instruction::MeasureWithReadoutError {
+                        observable: product_pauli(product),
+                        probability: instruction.probability,
+                    }
+                }));
+            }
+            Kind::ExpVal => {
+                out.extend(
+                    instruction
+                        .pauli_products
+                        .iter()
+                        .map(|product| Instruction::Expectation(product_pauli(product))),
+                );
+            }
+            Kind::XError | Kind::YError | Kind::ZError => {
+                let pauli = match kind {
+                    Kind::XError => Pauli::X,
+                    Kind::YError => Pauli::Y,
+                    _ => Pauli::Z,
+                };
+                for &qubit in &instruction.qubits {
+                    push_random_pauli(
+                        &mut out,
+                        vec![instruction.probability],
+                        vec![PauliString::single(circuit.nqubits, qubit, pauli)],
+                        false,
+                    );
+                }
+            }
+            Kind::Depolarize1 | Kind::Depolarize2 | Kind::Depolarize3 => {
+                let arity = match kind {
+                    Kind::Depolarize1 => 1,
+                    Kind::Depolarize2 => 2,
+                    _ => 3,
+                };
+                for qubits in instruction.qubits.chunks_exact(arity) {
+                    let alternatives = pauli_channel_alternatives(circuit.nqubits, qubits);
+                    push_random_pauli(
+                        &mut out,
+                        vec![
+                            instruction.probability / alternatives.len() as f64;
+                            alternatives.len()
+                        ],
+                        alternatives,
+                        false,
+                    );
+                }
+            }
+            Kind::PauliChannel1 | Kind::PauliChannel2 | Kind::PauliChannel3 => {
+                let arity = match kind {
+                    Kind::PauliChannel1 => 1,
+                    Kind::PauliChannel2 => 2,
+                    _ => 3,
+                };
+                for qubits in instruction.qubits.chunks_exact(arity) {
+                    push_random_pauli(
+                        &mut out,
+                        instruction.probabilities.clone(),
+                        pauli_channel_alternatives(circuit.nqubits, qubits),
+                        false,
+                    );
+                }
+            }
+            Kind::PauliProductChannel => push_random_pauli(
+                &mut out,
+                instruction.probabilities.clone(),
+                instruction
+                    .pauli_products
+                    .iter()
+                    .map(product_pauli)
+                    .collect(),
+                false,
+            ),
+            Kind::HeraldedErase | Kind::HeraldedPauliChannel1 => {
+                let probabilities = if kind == Kind::HeraldedErase {
+                    vec![instruction.probability / 4.0; 4]
+                } else {
+                    instruction.probabilities.clone()
+                };
+                for &qubit in &instruction.qubits {
+                    push_random_pauli(
+                        &mut out,
+                        probabilities.clone(),
+                        (0..4)
+                            .map(|code| pauli_from_code(circuit.nqubits, &[qubit], code))
+                            .collect(),
+                        true,
+                    );
+                }
+            }
+            Kind::MPad => {
+                for target in &instruction.measurement_targets {
+                    debug_assert!(target.qubit <= 1);
+                    out.push(Instruction::Record {
+                        value: (target.qubit != 0) != target.inverted,
+                        flip_probability: instruction.probability,
+                    });
+                }
+            }
+            Kind::FeedbackX | Kind::FeedbackY | Kind::FeedbackZ => {
+                let basis = match kind {
+                    Kind::FeedbackX => PauliBasis::X,
+                    Kind::FeedbackY => PauliBasis::Y,
+                    _ => PauliBasis::Z,
+                };
+                for target in &instruction.feedback_targets {
+                    debug_assert!(target.record > 0);
+                    out.push(Instruction::ConditionalPauli {
+                        basis,
+                        qubit: target.qubit,
+                        control: target.record - 1,
+                    });
+                }
+            }
+            Kind::H
+            | Kind::HNegXy
+            | Kind::HNegXz
+            | Kind::HNegYz
+            | Kind::HXy
+            | Kind::HYz
+            | Kind::CNegXyz
+            | Kind::CNegZyx
+            | Kind::CXNegYz
+            | Kind::CXyNegZ
+            | Kind::CXyz
+            | Kind::CZNegYx
+            | Kind::CZyNegX
+            | Kind::CZyx
+            | Kind::S
+            | Kind::SDag
+            | Kind::SqrtX
+            | Kind::SqrtXDag
+            | Kind::SqrtY
+            | Kind::SqrtYDag
+            | Kind::X
+            | Kind::Y
+            | Kind::Z => unreachable!("single-qubit Cliffords were handled above"),
+        }
+    }
+    out
+}
+
+impl Instruction {
+    /// Translates a circuit once into instructions reusable by
+    /// [`TableauSimulator::apply_batch`].
+    #[must_use]
+    pub fn from_circuit(circuit: &Circuit) -> Vec<Self> {
+        tableau_instructions(circuit)
+    }
 }
 
 impl TableauSimulator {
@@ -436,6 +906,147 @@ impl TableauSimulator {
         rotated
     }
 
+    fn sample_bernoulli(&mut self, probability: f64) -> Result<bool, SimError> {
+        sample_bernoulli(&mut self.core.rng, probability)
+            .map_err(|_| SimError::InvalidProbability(probability))
+    }
+
+    fn sample_alternative(
+        &mut self,
+        probabilities: &[f64],
+    ) -> Result<(Option<usize>, f64), SimError> {
+        let mut total = 0.0;
+        for &probability in probabilities {
+            if !(0.0..=1.0).contains(&probability) {
+                return Err(SimError::InvalidProbability(probability));
+            }
+            total += probability;
+        }
+        if total > 1.0 + 1e-12 {
+            return Err(SimError::InvalidProbabilityDistribution);
+        }
+        if probabilities.is_empty() || total == 0.0 {
+            return Ok((None, total));
+        }
+        if probabilities.len() == 1 {
+            return Ok((self.sample_bernoulli(probabilities[0])?.then_some(0), total));
+        }
+
+        let sample = rand_float(&mut self.core.rng);
+        let mut cumulative = 0.0;
+        for (index, &probability) in probabilities.iter().enumerate() {
+            cumulative += probability;
+            if sample < cumulative {
+                return Ok((Some(index), total.min(1.0)));
+            }
+        }
+        Ok((None, total.min(1.0)))
+    }
+
+    fn append_record(
+        &mut self,
+        outcome: &mut BatchOutcome,
+        value: bool,
+        flip_probability: f64,
+    ) -> Result<(), SimError> {
+        let recorded = value ^ self.sample_bernoulli(flip_probability)?;
+        outcome.records.push(MeasureResult {
+            outcome: recorded,
+            probability: if recorded == value {
+                1.0 - flip_probability
+            } else {
+                flip_probability
+            },
+            deterministic: flip_probability <= TOL || 1.0 - flip_probability <= TOL,
+        });
+        Ok(())
+    }
+
+    fn measure_with_readout_error(
+        &mut self,
+        observable: &PauliString,
+        probability: f64,
+    ) -> Result<MeasureResult, SimError> {
+        if !(0.0..=1.0).contains(&probability) {
+            return Err(SimError::InvalidProbability(probability));
+        }
+        let raw = self.measure_observable(observable)?;
+        let outcome = raw.outcome ^ self.sample_bernoulli(probability)?;
+        let raw_true = if raw.outcome {
+            raw.probability
+        } else {
+            1.0 - raw.probability
+        };
+        let recorded_true = raw_true * (1.0 - probability) + (1.0 - raw_true) * probability;
+        let recorded_probability = if outcome {
+            recorded_true
+        } else {
+            1.0 - recorded_true
+        };
+        Ok(MeasureResult {
+            outcome,
+            probability: recorded_probability,
+            deterministic: recorded_probability <= TOL || 1.0 - recorded_probability <= TOL,
+        })
+    }
+
+    fn apply_random_pauli(
+        &mut self,
+        outcome: &mut BatchOutcome,
+        probabilities: &[f64],
+        alternatives: &[PauliString],
+        heralded: bool,
+    ) -> Result<(), SimError> {
+        if probabilities.len() != alternatives.len() {
+            return Err(SimError::InvalidProbabilityDistribution);
+        }
+        let (selected, total) = self.sample_alternative(probabilities)?;
+        if let Some(index) = selected {
+            self.pauli(&alternatives[index]);
+        }
+        if heralded {
+            let fired = selected.is_some();
+            outcome.records.push(MeasureResult {
+                outcome: fired,
+                probability: if fired { total } else { 1.0 - total },
+                deterministic: total <= TOL || 1.0 - total <= TOL,
+            });
+        }
+        Ok(())
+    }
+
+    /// Apply a circuit, returning its measurement records.
+    ///
+    /// The circuit is translated to [`Instruction`]s and replayed through
+    /// [`apply_batch`](Self::apply_batch). Detector and observable annotations
+    /// do not add entries to the returned outcome.
+    ///
+    /// Every executable parser instruction is supported, including arbitrary
+    /// Pauli rotations, noise channels, heralded records, `MPAD`, and `EXP_VAL`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the relevant execution error. As with
+    /// [`apply_batch`](Self::apply_batch), a failure leaves the operations
+    /// before the failing instruction applied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ticit::{Circuit, TableauSimulator};
+    ///
+    /// let circuit = Circuit::from_text("H 0\nCX 0 1\nM 0 1")?;
+    /// let mut sim = TableauSimulator::with_seed(0, 7);
+    /// let outcome = sim.apply_circuit(&circuit)?;
+    /// assert_eq!(outcome.records[0].outcome, outcome.records[1].outcome);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn apply_circuit(&mut self, circuit: &Circuit) -> Result<BatchOutcome, SimError> {
+        let instructions = tableau_instructions(circuit);
+        self.ensure_qubits(circuit.nqubits);
+        self.apply_batch(&instructions)
+    }
+
     /// Run `instructions` in order, collecting every measurement.
     ///
     /// This is exactly the loop a caller would write by hand over the same
@@ -486,9 +1097,32 @@ impl TableauSimulator {
                     adjoint,
                 } => self.t_basis(*basis, *qubit, *adjoint)?,
                 Instruction::TPauli { axis, adjoint } => self.t_pauli(axis, *adjoint)?,
+                Instruction::PauliRotation { axis, kernel_angle } => {
+                    self.pauli_rotation(axis, *kernel_angle)?;
+                }
                 Instruction::Measure(observable) => {
                     outcome.records.push(self.measure_observable(observable)?);
                 }
+                Instruction::MeasureWithReadoutError {
+                    observable,
+                    probability,
+                } => outcome
+                    .records
+                    .push(self.measure_with_readout_error(observable, *probability)?),
+                Instruction::Record {
+                    value,
+                    flip_probability,
+                } => self.append_record(&mut outcome, *value, *flip_probability)?,
+                Instruction::RandomPauli {
+                    probabilities,
+                    alternatives,
+                    heralded,
+                } => {
+                    self.apply_random_pauli(&mut outcome, probabilities, alternatives, *heralded)?
+                }
+                Instruction::Expectation(observable) => outcome
+                    .expectation_values
+                    .push(self.peek_observable_expectation(observable)?),
                 Instruction::Reset { basis, qubit } => self.reset_basis(*basis, *qubit)?,
                 Instruction::ConditionalPauli {
                     basis,
@@ -504,8 +1138,8 @@ impl TableauSimulator {
                     }
                 }
             }
-            // Only `T`, measurement and reset can move the rank, but reading it
-            // is a length load — cheaper than deciding whether to read it.
+            // Only rotations, measurement and reset can move the rank, but
+            // reading it is a length load — cheaper than deciding whether to.
             outcome.max_rank = outcome.max_rank.max(self.rank());
         }
         Ok(outcome)
@@ -552,6 +1186,8 @@ impl TableauSimulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
+
     use crate::Pauli;
     use num_complex::Complex64;
     use paulimer::{Clifford, CliffordUnitary, DensePauli, Pauli as PaulimerPauli, PauliMutable};
@@ -896,6 +1532,119 @@ mod tests {
         let outcome = sim.apply_batch(&program).expect("valid program");
         assert_eq!(outcome.max_rank, 2);
         assert_eq!(sim.rank(), 1);
+    }
+
+    #[test]
+    fn apply_circuit_runs_rotations_noise_records_and_expectations() {
+        let text = "\
+H 0
+R_Z(0.2) 0
+EXP_VAL X0
+M(1) 0
+MPAD 1
+CX rec[-1] 1
+M 1
+X_ERROR(1) 2
+M 2
+PAULI_CHANNEL_1(1,0,0) 3
+M 3
+HERALDED_PAULI_CHANNEL_1(0,1,0,0) 4
+M 4
+HERALDED_ERASE(0) 5
+E(1) X6
+M 6
+MR(1) 7
+M 7
+DEPOLARIZE3(0) 8 9 10
+MPP Z8*Z9*Z10
+";
+        let mut sim = TableauSimulator::with_seed(0, 9);
+        let circuit = Circuit::from_text(text).expect("full circuit parses");
+        let outcome = sim
+            .apply_batch(&Instruction::from_circuit(&circuit))
+            .expect("full circuit executes");
+
+        assert!((outcome.expectation_values[0] - (0.2 * PI).cos()).abs() < 1e-9);
+        let records: Vec<bool> = outcome
+            .records
+            .iter()
+            .map(|record| record.outcome)
+            .collect();
+        assert_eq!(
+            &records[1..],
+            &[
+                true, true, true, true, true, true, false, true, true, false, false
+            ]
+        );
+        assert_eq!(sim.num_qubits(), 11);
+    }
+
+    #[test]
+    fn apply_circuit_two_qubit_cliffords_match_the_sampler_frame() {
+        type Gate = fn(&mut crate::frames::CliffordFrame, usize, usize);
+        let cases: [(&str, Gate); 22] = [
+            ("CX", crate::frames::left_cx),
+            ("CY", crate::frames::left_cy),
+            ("CZ", crate::frames::left_cz),
+            ("SWAP", crate::frames::left_swap),
+            ("CXSWAP", crate::frames::left_cxswap),
+            ("CZSWAP", crate::frames::left_czswap),
+            ("ISWAP", crate::frames::left_iswap),
+            ("ISWAP_DAG", crate::frames::left_iswap_dag),
+            ("SQRT_XX", crate::frames::left_sqrt_xx),
+            ("SQRT_XX_DAG", crate::frames::left_sqrt_xx_dag),
+            ("SQRT_YY", crate::frames::left_sqrt_yy),
+            ("SQRT_YY_DAG", crate::frames::left_sqrt_yy_dag),
+            ("SQRT_ZZ", crate::frames::left_sqrt_zz),
+            ("SQRT_ZZ_DAG", crate::frames::left_sqrt_zz_dag),
+            ("SWAPCX", crate::frames::left_swapcx),
+            ("XCX", crate::frames::left_xcx),
+            ("XCY", crate::frames::left_xcy),
+            ("XCZ", crate::frames::left_xcz),
+            ("YCX", crate::frames::left_ycx),
+            ("YCY", crate::frames::left_ycy),
+            ("YCZ", crate::frames::left_ycz),
+            ("ZCY", crate::frames::left_cy),
+        ];
+
+        let row_pauli = |row: super::super::frame::RowPauli| {
+            let mut pauli = PauliString::new(2);
+            for qubit in 0..2 {
+                let bit = 1 << qubit;
+                pauli.set(
+                    qubit,
+                    match (row.x[0] & bit != 0, row.z[0] & bit != 0) {
+                        (false, false) => Pauli::I,
+                        (true, false) => Pauli::X,
+                        (false, true) => Pauli::Z,
+                        (true, true) => Pauli::Y,
+                    },
+                );
+            }
+            pauli.set_phase(row.phase.into());
+            pauli
+        };
+
+        for (name, gate) in cases {
+            let mut sim = TableauSimulator::with_seed(2, 0);
+            let circuit = Circuit::from_text(&format!("{name} 0 1")).expect("circuit parses");
+            sim.apply_circuit(&circuit)
+                .expect("Clifford circuit executes");
+            let mut expected = crate::frames::CliffordFrame::new(2);
+            gate(&mut expected, 0, 1);
+            for qubit in 0..2 {
+                assert_eq!(
+                    row_pauli(sim.core.r.preimage_x(qubit)),
+                    crate::frames::preimage(&expected, &PauliString::single(2, qubit, Pauli::X),),
+                    "{name} X{qubit} preimage",
+                );
+                assert_eq!(
+                    row_pauli(sim.core.r.preimage_z(qubit)),
+                    crate::frames::preimage(&expected, &PauliString::single(2, qubit, Pauli::Z),),
+                    "{name} Z{qubit} preimage",
+                );
+            }
+        }
     }
 
     /// A failure aborts the batch in place: the instructions before it have

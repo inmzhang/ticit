@@ -14,7 +14,10 @@ pyo3_stub_gen::create_exception!(
 
 fn sim_error(error: ticit::SimError) -> PyErr {
     match error {
-        ticit::SimError::RepeatedQubit(_)
+        ticit::SimError::InvalidProbability(_)
+        | ticit::SimError::InvalidProbabilityDistribution
+        | ticit::SimError::InvalidRotationAngle(_)
+        | ticit::SimError::RepeatedQubit(_)
         | ticit::SimError::NonCommutingControlledPaulis
         | ticit::SimError::InvalidControlledPauli
         | ticit::SimError::NonHermitianPauli
