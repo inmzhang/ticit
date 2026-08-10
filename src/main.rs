@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -159,7 +158,7 @@ fn write_records(
     std::fs::write(suffixed_path(path, ".detectors.u8"), &result.detectors)?;
     let mut output = BufWriter::new(File::create(suffixed_path(path, ".exp_vals.f64"))?);
     for values in result.exp_vals.chunks(8192) {
-        let mut bytes = Vec::with_capacity(values.len() * size_of::<f64>());
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
         for value in values {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
