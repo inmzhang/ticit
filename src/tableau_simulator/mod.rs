@@ -127,21 +127,19 @@ pub struct MeasureResult {
 ///
 /// The method names are stim's wherever stim has one, so a circuit written
 /// against `stim.TableauSimulator` transliterates: the single-qubit Cliffords
-/// (`h`, `s`, `sqrt_x`, [`c_xyz`](Self::c_xyz), [`h_xy`](Self::h_xy), …), the
-/// two-qubit `<A>C<B>` family ([`cx`](Self::cx)/[`cnot`](Self::cnot)/`zcx`,
-/// `cy`/`zcy`, `cz`/`zcz`, `xcx` … `ycz`) plus `swap`/[`iswap`](Self::iswap),
-/// [`measure`](Self::measure)/[`measure_observable`](Self::measure_observable),
+/// (`h`, `s`, `sqrt_x`, `c_xyz`, `h_xy`, …), the two-qubit `<A>C<B>` family
+/// (`cx`/`cnot`/`zcx`, `cy`/`zcy`, `cz`/`zcz`, `xcx` … `ycz`) plus
+/// `swap`/`iswap`, `measure`/`measure_observable`,
 /// the `postselect_*` family, `reset`/`reset_x`/`reset_y`/`reset_z`, and
-/// [`peek_observable_expectation`](Self::peek_observable_expectation)/`peek_x`/
-/// `peek_y`/`peek_z`. Two departures: the measurements return a
+/// `peek_observable_expectation`/`peek_x`/`peek_y`/`peek_z`. Two departures:
+/// the measurements return a
 /// [`MeasureResult`] rather than a bare `bool` (the branch weight is computed
 /// to sample from it, so reporting it is free), and observables are
 /// [`PauliString`]s.
 ///
-/// The Pauli-rotation extension keeps this workspace's names — [`t`](Self::t),
-/// [`t_dag`](Self::t_dag), [`t_pauli`](Self::t_pauli), [`ccz`](Self::ccz) and
-/// [`rank`](Self::rank) — as does the batched
-/// [`apply_batch`](Self::apply_batch) instruction path.
+/// The Pauli-rotation extension keeps this workspace's names — `t`, `t_dag`,
+/// `t_pauli`, `ccz` and `rank` — as does the batched `apply_batch` instruction
+/// path.
 #[derive(Clone, Debug)]
 pub struct TableauSimulator {
     core: Core,

@@ -1,4 +1,4 @@
-//! Ticit is a pure-Rust implementation of [SymFT](https://arxiv.org/abs/2607.28600) with CPU and an experimental CUDA backend utilizing [cutile-rs](https://github.com/NVlabs/cutile-rs), plus a Tableau-style [`TableauSimulator`](https://docs.rs/ticit/latest/ticit/tableau_simulator/struct.TableauSimulator.html) for Clifford and Pauli-rotation circuits.
+//! Ticit is a pure-Rust implementation of [SymFT](https://arxiv.org/abs/2607.28600) with CPU and an experimental CUDA backend utilizing [cutile-rs](https://github.com/NVlabs/cutile-rs), plus a stim-like procedural [`TableauSimulator`] for Clifford + T circuits.
 //!
 //! Parse a [`.ticit` circuit](Circuit::from_file), [`compile`](Circuit::compile)
 //! a [`Sampler`], then reuse it across any number of sampling calls. `DISCARD`

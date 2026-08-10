@@ -15,9 +15,9 @@ result = compiled_sampler.sample(shots=10_000, seed=42)
 print(result.logical_error_rate)
 ```
 
-Like Clifft, `SampleResult` contains NumPy arrays for per-shot measurements,
-detectors, observables, and expectation values. It also includes aggregate
-postselection and logical-error counters.
+Like Clifft, [`SampleResult`](#ticitsampleresult) contains NumPy arrays for
+per-shot measurements, detectors, observables, and expectation values. It also
+includes aggregate postselection and logical-error counters.
 
 ## Index
 
@@ -32,7 +32,7 @@ postselection and logical-error counters.
   - [`ticit.Circuit.num_observables`](#ticitcircuitnum_observables)
   - [`ticit.Circuit.num_exp_vals`](#ticitcircuitnum_exp_vals)
 - [`ticit.Program`](#ticitprogram)
-  - [`ticit.Program.sampde`](#ticitprogramsample)
+  - [`ticit.Program.sample`](#ticitprogramsample)
   - [`ticit.Program.backend`](#ticitprogrambackend)
   - [`ticit.Program.num_qubits`](#ticitprogramnum_qubits)
   - [`ticit.Program.num_measurements`](#ticitprogramnum_measurements)
@@ -110,7 +110,8 @@ assert circuit.num_detectors == 1
 
 Raises:
 
-- `ticit.ParseError`: the input is malformed or cannot be lowered.
+- [`ticit.ParseError`](#ticitparseerror): the input is malformed or cannot be
+  lowered.
 - `ValueError`: the input uses a valid but unsupported operation.
 
 ### `ticit.Circuit.from_text`
@@ -130,7 +131,8 @@ def from_file(path: str) -> ticit.Circuit
 ```
 
 Reads a UTF-8 circuit file and returns its parsed circuit. Raises `OSError` if
-the file cannot be read and `ticit.ParseError` if its contents are invalid.
+the file cannot be read and [`ticit.ParseError`](#ticitparseerror) if its
+contents are invalid.
 
 ### `ticit.Circuit.num_qubits`
 
@@ -295,8 +297,9 @@ shot.
 ## `ticit.SampleResult`
 
 Per-shot records, aggregate counters, and timing from one sampling call.
-Instances are immutable and are returned by `Program.sample`, `ticit.sample`, and
-`ticit.sample_survivors`.
+Instances are immutable and are returned by
+[`Program.sample`](#ticitprogramsample), [`ticit.sample`](#ticitsample), and
+[`ticit.sample_survivors`](#ticitsample_survivors).
 
 ### Record arrays
 
@@ -308,9 +311,10 @@ property exp_vals: numpy.ndarray      # float64, (rows, program.num_exp_vals)
 property bit_packed: bool
 ```
 
-`Program.sample` returns `passed_shots` rows. The three bit arrays can also be
-tuple-unpacked as `measurements, detectors, observables = result`, matching
-Clifft. Without packing, each bit occupies one byte. Count-only
+[`Program.sample`](#ticitprogramsample) returns `passed_shots` rows. The three
+bit arrays can also be tuple-unpacked as
+`measurements, detectors, observables = result`, matching Clifft. Without
+packing, each bit occupies one byte. Count-only
 `sample_survivors(..., keep_records=False)` returns zero-row arrays with the
 requested packed or unpacked column count.
 
@@ -546,7 +550,8 @@ def ccz(self, a: int, b: int, c: int) -> None
 
 Controlled Pauli axes must be positive, Hermitian, and commuting. T rotation
 axes must be Hermitian. Argument failures raise `ValueError`; exponential rank
-growth beyond the engine cap raises `ticit.SimulatorError`.
+growth beyond the engine cap raises
+[`ticit.SimulatorError`](#ticitsimulatorerror).
 
 Measurements and postselection:
 
@@ -563,8 +568,8 @@ def postselect_y(self, q: int, desired_value: bool) -> ticit.MeasureResult
 def postselect_z(self, q: int, desired_value: bool) -> ticit.MeasureResult
 ```
 
-Forcing an outcome with zero probability raises `ticit.SimulatorError` and
-leaves the state unchanged.
+Forcing an outcome with zero probability raises
+[`ticit.SimulatorError`](#ticitsimulatorerror) and leaves the state unchanged.
 
 Non-collapsing expectations and resets:
 
@@ -677,11 +682,11 @@ Arguments:
 
 Returns:
 
-- A reusable `ticit.Program`.
+- A reusable [`ticit.Program`](#ticitprogram).
 
 Raises:
 
-- `ticit.ParseError`: malformed circuit source.
+- [`ticit.ParseError`](#ticitparseerror): malformed circuit source.
 - `ValueError`: invalid options, mask length, backend name, or unsupported
   reference normalization.
 - `RuntimeError`: `backend="gpu"` was requested from a CPU-only build.
@@ -733,7 +738,8 @@ def ticit.sample_survivors(
 A Clifft-compatible name for postselected sampling. Its counters are identical
 to `ticit.sample(program, shots, seed)`. `keep_records=True` returns survivor
 rows; `False` returns zero-row arrays and avoids record materialization.
-`bit_packed` has the same meaning as on `Program.sample`.
+`bit_packed` has the same meaning as on
+[`Program.sample`](#ticitprogramsample).
 
 ## GPU backend
 
@@ -753,7 +759,8 @@ Requirements and current limits:
 - GPU detector postselection is all-or-none. An empty/zero mask selects none;
   an all-nonzero mask selects every detector. Selective masks raise
   `ValueError` instead of silently changing semantics.
-- The GPU currently supports count-only sampling; `Program.sample` raises
+- The GPU currently supports count-only sampling;
+  [`Program.sample`](#ticitprogramsample) raises
   `RuntimeError` because GPU kernels do not yet return per-shot records.
 - GPU planning, device allocation, and one-time cuTile JIT warmup currently
   occur during the sampling call and are reported in `compile_s`.
