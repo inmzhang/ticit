@@ -110,8 +110,8 @@ pub struct GpuOptions {
     /// Shots presampled and uploaded per launch group.
     pub chunk_shots: NonZeroUsize,
 
-    /// Report detector-rejected shots (execution currently evaluates all shots).
-    pub postselect_detectors: bool,
+    /// Flat detector flags; any nonzero entry enables postselection.
+    pub postselection_mask: Vec<u8>,
 
     /// Compute a noiseless reference on the CPU before GPU sampling.
     pub normalize_syndromes: bool,
@@ -170,7 +170,7 @@ pub fn run(args: &GpuOptions) -> Result<()> {
         args.shots,
         args.seed,
         args.chunk_shots,
-        args.postselect_detectors,
+        &args.postselection_mask,
         0,
         parse_s,
         Some(&args.circuit),
@@ -185,10 +185,9 @@ pub fn run(args: &GpuOptions) -> Result<()> {
 /// Samples a parsed circuit on CUDA and returns the same aggregate counters as
 /// the CPU [`crate::Sampler`].
 ///
-/// Set `postselect_detectors` to evaluate and reject on every detector. The
-/// current GPU kernel supports all-or-none detector postselection; selective
-/// masks remain a CPU-only option. `observable` selects the observable index
-/// counted as a logical error.
+/// Nonzero `postselection_mask` entries reject shots at the corresponding
+/// detectors. `observable` selects the observable index counted as a logical
+/// error.
 ///
 /// # Examples
 ///
@@ -202,7 +201,7 @@ pub fn run(args: &GpuOptions) -> Result<()> {
 ///     1_000,
 ///     5,
 ///     NonZeroUsize::new(1_000).unwrap(),
-///     false,
+///     &[],
 ///     0,
 /// )?;
 /// assert_eq!(result.counts.shots, 1_000);
@@ -218,7 +217,7 @@ pub fn sample_circuit(
     shots: u64,
     seed: u64,
     chunk_shots: NonZeroUsize,
-    postselect_detectors: bool,
+    postselection_mask: &[u8],
     observable: usize,
 ) -> Result<SampleResult> {
     sample_circuit_impl(
@@ -226,7 +225,7 @@ pub fn sample_circuit(
         shots,
         seed,
         chunk_shots,
-        postselect_detectors,
+        postselection_mask,
         observable,
         0.0,
         None,
@@ -252,7 +251,7 @@ pub fn sample_circuit_with_reference(
     shots: u64,
     seed: u64,
     chunk_shots: NonZeroUsize,
-    postselect_detectors: bool,
+    postselection_mask: &[u8],
     observable: usize,
     expected_detectors: &[u8],
     expected_observables: &[u8],
@@ -262,7 +261,7 @@ pub fn sample_circuit_with_reference(
         shots,
         seed,
         chunk_shots,
-        postselect_detectors,
+        postselection_mask,
         observable,
         0.0,
         None,
@@ -326,7 +325,7 @@ pub fn sample_circuit_records_with_reference(
         shots,
         seed,
         chunk_shots,
-        false,
+        &[],
         observable,
         0.0,
         None,
@@ -343,7 +342,7 @@ fn sample_circuit_impl(
     shots: u64,
     seed: u64,
     chunk_shots: NonZeroUsize,
-    postselect_detectors: bool,
+    postselection_mask: &[u8],
     observable: usize,
     parse_s: f64,
     report_path: Option<&Path>,
@@ -374,13 +373,7 @@ fn sample_circuit_impl(
         .is_some_and(|&bit| bit != 0);
 
     let plan_start = Instant::now();
-    let postselection_mask = if postselect_detectors {
-        vec![1; parsed.detector_count()]
-    } else {
-        Vec::new()
-    };
-    let mut program =
-        plan_circuit(parsed, &postselection_mask).context("failed to plan circuit")?;
+    let mut program = plan_circuit(parsed, postselection_mask).context("failed to plan circuit")?;
     if let Some(k) = exact_k {
         condition_exact_k(&mut program, k)?;
     }
@@ -1268,7 +1261,10 @@ fn sample_circuit_impl(
         println!("discarded {discarded}");
         println!("accepted {accepted}");
         println!("logical_errors {logical_errors}");
-        println!("detector_postselection {postselect_detectors}");
+        println!(
+            "detector_postselection {}",
+            has_postselection(&input.program)
+        );
         println!("parse_s {parse_s}");
         println!("plan_s {plan_s}");
         println!("rng_setup_s {rng_setup_s}");

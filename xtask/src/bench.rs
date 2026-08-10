@@ -35,9 +35,9 @@ pub(crate) struct Args {
     #[arg(long, default_value = "1", value_parser = parse_threads)]
     threads: usize,
 
-    /// Discard shots with nonzero detector parity.
-    #[arg(long)]
-    postselect_detectors: bool,
+    /// Flat detector postselection flags, separated by commas.
+    #[arg(long, value_delimiter = ',')]
+    postselection_mask: Vec<u8>,
 }
 
 fn parse_u64(raw: &str, name: &str) -> std::result::Result<u64, String> {
@@ -94,11 +94,7 @@ pub(crate) fn run(options: &Args) -> Result<()> {
     let parse_s = parse_start.elapsed().as_secs_f64();
     let sampler_options = SamplerOptions {
         observable: options.observable,
-        postselection_mask: if options.postselect_detectors {
-            vec![1; circuit.detector_count()]
-        } else {
-            Vec::new()
-        },
+        postselection_mask: options.postselection_mask.clone(),
         normalize_syndromes: true,
         sample_chunk_shots: options.sample_chunk_shots,
         batch_size: options.batch_size,
@@ -213,7 +209,7 @@ mod tests {
             "--batch-size=64",
             "--sample-chunk-shots=auto",
             "--threads=auto",
-            "--postselect-detectors",
+            "--postselection-mask=1",
         ])
         .expect("flags parse")
         .args;
@@ -221,7 +217,7 @@ mod tests {
         assert_eq!(options.shots, 7);
         assert_eq!(options.batch_size, 64);
         assert_eq!(options.sample_chunk_shots, 0);
-        assert!(options.postselect_detectors);
+        assert_eq!(options.postselection_mask, [1]);
         assert!(options.threads >= 1);
     }
 }

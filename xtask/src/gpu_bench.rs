@@ -51,12 +51,25 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u64).range(1..=1024))]
     symft_threads_per_block: u64,
 
-    /// Postselect detectors; ticit first normalizes them with a CPU reference.
-    #[arg(long)]
-    postselect_detectors: bool,
+    /// Flat detector postselection flags, separated by commas.
+    #[arg(long, value_delimiter = ',')]
+    postselection_mask: Vec<u8>,
 }
 
 pub(crate) fn run(options: &Args) -> Result<()> {
+    let detector_count = ticit::Circuit::from_file(&options.circuit)?.detector_count();
+    if !options.postselection_mask.is_empty() && options.postselection_mask.len() != detector_count
+    {
+        bail!(
+            "postselection_mask has length {}, expected {detector_count}",
+            options.postselection_mask.len()
+        );
+    }
+    if options.postselection_mask.contains(&0)
+        && options.postselection_mask.iter().any(|&flag| flag != 0)
+    {
+        bail!("SymFT GPU comparison supports only empty, all-zero, or all-nonzero masks");
+    }
     run_one("ticit", &options.ticit_binary, ticit_arguments(options))?;
     run_one("SymFT", &options.symft_binary, symft_arguments(options))
 }
@@ -84,8 +97,17 @@ fn ticit_arguments(options: &Args) -> Vec<OsString> {
         options.shots_per_launch.to_string().into(),
         "--normalize-syndromes".into(),
     ];
-    if options.postselect_detectors {
-        arguments.push("--postselect-detectors".into());
+    if !options.postselection_mask.is_empty() {
+        arguments.push("--postselection-mask".into());
+        arguments.push(
+            options
+                .postselection_mask
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+                .into(),
+        );
     }
     arguments
 }
@@ -101,7 +123,7 @@ fn symft_arguments(options: &Args) -> Vec<OsString> {
         "--threads-per-block".into(),
         options.symft_threads_per_block.to_string().into(),
         options.symft_mode.flag().into(),
-        if options.postselect_detectors {
+        if options.postselection_mask.iter().any(|&flag| flag != 0) {
             "--postselect-detectors".into()
         } else {
             "--no-postselect-detectors".into()
@@ -124,7 +146,7 @@ mod tests {
             symft_binary: "symft-gpu".into(),
             symft_mode: SymftExogenousMode::Gpu,
             symft_threads_per_block: 64,
-            postselect_detectors: true,
+            postselection_mask: vec![1],
         }
     }
 
@@ -142,7 +164,8 @@ mod tests {
                 "--chunk-shots",
                 "128",
                 "--normalize-syndromes",
-                "--postselect-detectors",
+                "--postselection-mask",
+                "1",
             ]
         );
         assert_eq!(

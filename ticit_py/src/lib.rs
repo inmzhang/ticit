@@ -209,7 +209,7 @@ enum Backend {
     Gpu {
         circuit: Box<ticit::Circuit>,
         chunk_shots: NonZeroUsize,
-        postselect_detectors: bool,
+        postselection_mask: Vec<u8>,
         expected_detectors: Vec<u8>,
         expected_observables: Vec<u8>,
     },
@@ -267,7 +267,7 @@ impl PyProgram {
                 Backend::Gpu {
                     circuit,
                     chunk_shots,
-                    postselect_detectors,
+                    postselection_mask,
                     expected_detectors,
                     expected_observables,
                 } => ticit::gpu::sample_circuit_with_reference(
@@ -275,7 +275,7 @@ impl PyProgram {
                     shots,
                     seed.unwrap_or_else(random_seed),
                     *chunk_shots,
-                    *postselect_detectors,
+                    postselection_mask,
                     observable,
                     expected_detectors,
                     expected_observables,
@@ -700,28 +700,20 @@ fn compile_circuit(
                         observables: expected_observables,
                     }
                 };
-                let requested_all = !mask.is_empty() && mask.iter().all(|&flag| flag != 0);
-                let requested_any = mask.iter().any(|&flag| flag != 0);
-                let postselect_detectors = requested_all || circuit.all_detectors_postselected();
-                let selective_source =
-                    circuit.has_detector_postselection() && !circuit.all_detectors_postselected();
-                if (requested_any && !requested_all) || (selective_source && !requested_all) {
-                    return Err(PyValueError::new_err(
-                        "the GPU backend supports only no detector postselection or all detectors postselected",
-                    ));
-                }
+                let postselection =
+                    circuit.has_detector_postselection() || mask.iter().any(|&flag| flag != 0);
                 let chunk_shots = NonZeroUsize::new(gpu_chunk_shots)
                     .ok_or_else(|| PyValueError::new_err("gpu_chunk_shots must be positive"))?;
                 (
                     Backend::Gpu {
                         circuit: Box::new(circuit.clone()),
                         chunk_shots,
-                        postselect_detectors,
+                        postselection_mask: mask,
                         expected_detectors: reference.detectors,
                         expected_observables: reference.observables,
                     },
                     "gpu",
-                    postselect_detectors,
+                    postselection,
                 )
             }
             #[cfg(not(feature = "gpu"))]

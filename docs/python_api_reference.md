@@ -774,9 +774,8 @@ Requirements and current limits:
 
 - Build `ticit_py` with Cargo feature `gpu`.
 - A working CUDA environment supported by ticit's `cutile` backend is required.
-- GPU detector postselection is all-or-none. An empty/zero mask selects none;
-  an all-nonzero mask selects every detector. Selective masks raise
-  `ValueError` instead of silently changing semantics.
+- GPU detector postselection uses the same per-detector `postselection_mask`
+  as the CPU and Clifft APIs.
 - The GPU currently supports count-only sampling;
   [`Program.sample`](#ticitprogramsample) raises
   `RuntimeError` because GPU kernels do not yet return per-shot records.

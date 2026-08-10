@@ -39,9 +39,9 @@ struct Cli {
     #[arg(long, default_value = "1048576")]
     chunk_shots: NonZeroUsize,
 
-    /// Postselect every detector, in addition to source `DISCARD`s.
-    #[arg(long)]
-    postselect_detectors: bool,
+    /// Flat detector postselection flags, separated by commas.
+    #[arg(long, value_delimiter = ',')]
+    postselection_mask: Vec<u8>,
 
     /// XOR detector and observable outcomes with a noiseless reference sample.
     #[arg(long)]
@@ -68,11 +68,7 @@ fn run_cpu(args: &Cli) -> Result<()> {
     let circuit = Circuit::from_file(&args.circuit)
         .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
     let options = SamplerOptions {
-        postselection_mask: if args.postselect_detectors {
-            vec![1; circuit.detector_count()]
-        } else {
-            Vec::new()
-        },
+        postselection_mask: args.postselection_mask.clone(),
         normalize_syndromes: args.normalize_syndromes,
         threads: args.threads.get(),
         ..Default::default()
@@ -111,6 +107,9 @@ fn run_cpu(args: &Cli) -> Result<()> {
 #[cfg(feature = "gpu")]
 fn run_gpu(args: &Cli) -> Result<()> {
     if let Some(path) = &args.records_out {
+        if !args.postselection_mask.is_empty() {
+            anyhow::bail!("--postselection-mask cannot be combined with --records-out");
+        }
         let circuit = Circuit::from_file(&args.circuit)
             .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
         let reference = if args.normalize_syndromes {
@@ -152,7 +151,7 @@ fn run_gpu(args: &Cli) -> Result<()> {
         shots: args.shots,
         seed: args.seed,
         chunk_shots: args.chunk_shots,
-        postselect_detectors: args.postselect_detectors,
+        postselection_mask: args.postselection_mask.clone(),
         normalize_syndromes: args.normalize_syndromes,
     })
 }
