@@ -1218,6 +1218,26 @@ mod tests {
     }
 
     #[test]
+    fn detector_plan_preserves_postselection_flag() {
+        for postselect in [false, true] {
+            let program = FactoredInstructionProgram::new(
+                1,
+                0,
+                vec![FactoredInstruction::RecordDetector(RecordDetector {
+                    detector: 1,
+                    postselect,
+                    ..RecordDetector::default()
+                })],
+                0,
+            )
+            .expect("valid test program");
+
+            let plan = GpuPlan::build(&program, &[]).expect("GPU plan");
+            assert_eq!(plan.instructions[0].diagonal_phase, postselect);
+        }
+    }
+
+    #[test]
     fn excess_dormant_branches_are_presampled() {
         let instructions = (1..=MAX_BRANCHES as i32 + 1)
             .map(|branch| {
