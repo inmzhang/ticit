@@ -181,6 +181,9 @@ Number of expectation values produced by `EXP_VAL` instructions.
 def circuit.compile(
     postselection_mask: Sequence[int] | None = None,
     *,
+    normalize_syndromes: bool = False,
+    expected_detectors: Sequence[int] | None = None,
+    expected_observables: Sequence[int] | None = None,
     backend: str = "cpu",
     observable: int = 0,
     threads: int = 1,
@@ -191,8 +194,25 @@ def circuit.compile(
 ```
 
 Compiles the parsed circuit into a reusable sampler. `postselection_mask`
-contains one zero/nonzero flag per detector. `backend` selects `"cpu"` or
-`"gpu"`; the remaining options configure the selected backend.
+contains one zero/nonzero flag per detector. `normalize_syndromes=True`
+computes a noiseless reference sample on the CPU during preparation and XORs
+detector and observable outcomes against it. Explicit `expected_detectors` and
+`expected_observables` may be supplied instead, but cannot be combined with
+`normalize_syndromes`. Both CPU and GPU sampling use the prepared vectors.
+
+### `ticit.Circuit.reference_sample`
+
+```python
+def circuit.reference_sample() -> ticit.ReferenceSample
+```
+
+Returns the full noiseless detector and observable parity vectors. This is the
+same CPU reference used by `normalize_syndromes=True`.
+
+## `ticit.ReferenceSample`
+
+An immutable result with `detectors: list[bool]` and
+`observables: list[bool]` properties.
 
 ## `ticit.Program`
 
@@ -202,9 +222,9 @@ A circuit prepared for repeated calls to
 constructor.
 
 CPU programs retain their planned program, expression plan, worker states, and
-buffers between calls. GPU programs retain the parsed circuit and backend
-configuration; current GPU planning and device allocation occur in each sample
-call.
+buffers between calls. GPU programs retain the parsed circuit, backend
+configuration, and CPU-produced reference vectors; current GPU planning and
+device allocation occur in each sample call.
 
 ### `ticit.Program.backend`
 
@@ -657,8 +677,7 @@ def ticit.compile(
 
 Compatibility wrapper that parses and prepares a circuit. New code should use
 [`Circuit.compile`](#ticitcircuitcompile). The positional parameters mirror
-Clifft's `compile` function so existing raw-parity call sites need minimal
-changes.
+Clifft's `compile` function so existing call sites need minimal changes.
 
 Arguments:
 
@@ -666,10 +685,10 @@ Arguments:
 - `postselection_mask`: one zero/nonzero flag per detector. Nonzero flags reject
   a shot when that detector parity is one. Source `DISCARD` declarations are
   unioned with this mask.
-- `expected_detectors`: reserved for Clifft call compatibility. Must be `None`
-  or empty because ticit deliberately uses raw parity.
-- `expected_observables`: same restriction as `expected_detectors`.
-- `normalize_syndromes`: reserved for compatibility and must remain `False`.
+- `expected_detectors`: explicit detector reference bits, one per detector.
+- `expected_observables`: explicit observable reference bits, one per index.
+- `normalize_syndromes`: compute a noiseless reference on the CPU during
+  preparation. Mutually exclusive with explicit reference vectors.
 - `backend`: `"cpu"` or `"gpu"`.
 - `observable`: observable index counted as a logical error.
 - `threads`: maximum CPU worker count; must be positive.
@@ -687,8 +706,7 @@ Returns:
 Raises:
 
 - [`ticit.ParseError`](#ticitparseerror): malformed circuit source.
-- `ValueError`: invalid options, mask length, backend name, or unsupported
-  reference normalization.
+- `ValueError`: invalid options, reference length, mask length, or backend name.
 - `RuntimeError`: `backend="gpu"` was requested from a CPU-only build.
 
 ```python

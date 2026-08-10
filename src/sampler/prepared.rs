@@ -106,6 +106,12 @@ pub struct SamplerOptions {
     pub observable: usize,
     /// Flat detector flags; any nonzero entry enables postselection.
     pub postselection_mask: Vec<u8>,
+    /// Compute and XOR a noiseless detector/observable reference sample.
+    pub normalize_syndromes: bool,
+    /// Explicit detector reference bits; empty leaves detector parity raw.
+    pub expected_detectors: Vec<u8>,
+    /// Explicit observable reference bits; empty leaves observable parity raw.
+    pub expected_observables: Vec<u8>,
     /// 0 selects the default (`max(2048, batch_size)` for the batch sampler).
     pub sample_chunk_shots: usize,
     /// 0 selects a batch size based on the circuit's peak active width.
@@ -119,6 +125,9 @@ impl Default for SamplerOptions {
         Self {
             observable: 0,
             postselection_mask: Vec::new(),
+            normalize_syndromes: false,
+            expected_detectors: Vec::new(),
+            expected_observables: Vec::new(),
             sample_chunk_shots: 0,
             batch_size: 0,
             threads: 1,
@@ -185,6 +194,15 @@ pub struct SampleResult {
     pub observable_ones: Vec<u64>,
     /// Row-major expectation values.
     pub exp_vals: Vec<f64>,
+}
+
+/// Full noiseless detector and observable parity vectors for a circuit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReferenceSample {
+    /// One bit per detector declaration.
+    pub detectors: Vec<u8>,
+    /// One bit per observable index, including unused gaps.
+    pub observables: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -312,6 +330,58 @@ fn prepare_expression_plan(
     prepare_presampled_expression_plan(expression_plan, program, &samples)
 }
 
+fn reference_sample_for_program(
+    program: &FactoredInstructionProgram,
+    observable_records: &[Vec<Vec<i32>>],
+) -> Result<ReferenceSample> {
+    let mut samples = PackedPresampledExogenous::default();
+    prepare_presampled_exogenous_packed(&mut samples, program)?;
+    samples.nshots = 1;
+    samples.shot_words = 1;
+    samples.value_words.resize(program.nsymbols, 0);
+    samples.value_words.fill(0);
+    samples.sparse_condition_words.fill(0);
+    samples.sparse_hit_offsets.resize(program.nsymbols + 1, 0);
+    samples.sparse_hit_offsets.fill(0);
+
+    let mut expression_plan = PresampledExpressionPlan::default();
+    prepare_presampled_expression_plan(&mut expression_plan, program, &samples)?;
+    let mut expression_block = PresampledExpressionBlock::default();
+    evaluate_presampled_expression_block(&mut expression_block, &expression_plan, &samples)?;
+
+    let mut runtime = BatchFactoredExecutorState::new(program, 1, 1)?;
+    runtime.dense_shot_major_active = true;
+    runtime.store_detector_records = true;
+    reset_batch_executor(&mut runtime, program, 1)?;
+    execute_batch_in_place_expressions(
+        &mut runtime,
+        program,
+        &expression_plan,
+        &expression_block,
+        0,
+    )?;
+
+    let detectors = (0..program.ndetectors)
+        .map(|detector| u8::from(runtime.detector_words[detector * runtime.batch_words] & 1 != 0))
+        .collect();
+    let mut observable_words = Vec::new();
+    fill_observable_words(&mut observable_words, &runtime, observable_records)?;
+    let observables = (0..observable_records.len())
+        .map(|observable| u8::from(observable_words[observable * runtime.batch_words] & 1 != 0))
+        .collect();
+    Ok(ReferenceSample {
+        detectors,
+        observables,
+    })
+}
+
+pub(crate) fn circuit_reference_sample(circuit: &Circuit) -> Result<ReferenceSample> {
+    let program = plan_circuit(circuit, &[])?;
+    let observable_records =
+        logical_records_by_observable(&circuit.observables, circuit.observable_count());
+    reference_sample_for_program(&program, &observable_records)
+}
+
 fn ceil_div_u64(numerator: u64, denominator: u64) -> Result<u64> {
     if denominator == 0 {
         return Err(TicitError::new("division by zero in chunk sizing"));
@@ -413,6 +483,37 @@ impl Sampler {
     }
 
     pub(crate) fn from_input(input: SamplingInput, mut options: SamplerOptions) -> Result<Self> {
+        if options.normalize_syndromes
+            && (!options.expected_detectors.is_empty() || !options.expected_observables.is_empty())
+        {
+            return Err(TicitError::new(
+                "normalize_syndromes cannot be combined with expected_detectors or expected_observables",
+            ));
+        }
+        if !options.expected_detectors.is_empty()
+            && options.expected_detectors.len() != input.program.ndetectors
+        {
+            return Err(TicitError::new(format!(
+                "expected_detectors has length {}, expected {}",
+                options.expected_detectors.len(),
+                input.program.ndetectors,
+            )));
+        }
+        if !options.expected_observables.is_empty()
+            && options.expected_observables.len() != input.observable_includes
+        {
+            return Err(TicitError::new(format!(
+                "expected_observables has length {}, expected {}",
+                options.expected_observables.len(),
+                input.observable_includes,
+            )));
+        }
+        if options.normalize_syndromes {
+            let reference =
+                reference_sample_for_program(&input.program, &input.observable_records)?;
+            options.expected_detectors = reference.detectors;
+            options.expected_observables = reference.observables;
+        }
         options.batch_size = if options.batch_size > 0 {
             options.batch_size
         } else {
@@ -464,6 +565,7 @@ impl Sampler {
                 let postselection_options = BatchDetectorPostselectionOptions {
                     mask_dead_shots_min_fraction_denominator: POSTSELECTION_COMPACTION_DENOMINATOR,
                     retained_record_uses: Some(&retained_output_records),
+                    expected_detectors: &options.expected_detectors,
                 };
                 prepare_batch_detector_postselection_scratch_for_program(
                     &mut worker.postselection_scratch,
@@ -586,6 +688,7 @@ impl Sampler {
             } else {
                 &self.retained_observable_records
             }),
+            expected_detectors: &self.options.expected_detectors,
         };
 
         let sample_start = Instant::now();
@@ -593,6 +696,8 @@ impl Sampler {
         let program = &self.program;
         let expression_plan = &self.expression_plan;
         let observable_records = &self.observable_records;
+        let expected_detectors = &self.options.expected_detectors;
+        let expected_observables = &self.options.expected_observables;
         let selected_observable = self.options.observable;
         let workers = &mut self.workers[..active_threads];
         let run_worker = |worker_id: usize, worker: &mut BatchWorker| -> Result<()> {
@@ -659,6 +764,8 @@ impl Sampler {
                     append_block_outputs(
                         worker,
                         observable_records,
+                        expected_detectors,
+                        expected_observables,
                         selected_observable,
                         keep_records,
                         bit_packed,
@@ -767,6 +874,7 @@ fn fill_observable_words(
 fn append_bit_rows(
     out: &mut Vec<u8>,
     columns: &[u64],
+    expected: &[u8],
     column_count: usize,
     stride_words: usize,
     rows: usize,
@@ -781,13 +889,17 @@ fn append_bit_rows(
             let row_start = out.len();
             out.resize(row_start + output_columns, 0);
             for column in 0..column_count {
-                if columns[column * stride_words + word] & mask != 0 {
+                let bit = (columns[column * stride_words + word] & mask != 0)
+                    ^ expected.get(column).is_some_and(|&value| value != 0);
+                if bit {
                     out[row_start + column / 8] |= 1 << (column % 8);
                 }
             }
         } else {
             for column in 0..column_count {
-                out.push(u8::from(columns[column * stride_words + word] & mask != 0));
+                let bit = (columns[column * stride_words + word] & mask != 0)
+                    ^ expected.get(column).is_some_and(|&value| value != 0);
+                out.push(u8::from(bit));
             }
         }
     }
@@ -796,6 +908,8 @@ fn append_bit_rows(
 fn append_block_outputs(
     worker: &mut BatchWorker,
     observable_records: &[Vec<Vec<i32>>],
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
     selected_observable: usize,
     keep_records: bool,
     bit_packed: bool,
@@ -813,6 +927,15 @@ fn append_block_outputs(
     } = worker;
     let rows = runtime.active_shots;
     fill_observable_words(observable_words, runtime, observable_records)?;
+    for (observable, &expected) in expected_observables.iter().enumerate() {
+        if expected == 0 {
+            continue;
+        }
+        let base = observable * runtime.batch_words;
+        for word in 0..batch_word_count(rows) {
+            observable_words[base + word] ^= live_word_mask(rows, word);
+        }
+    }
     counts.accepted += rows as u64;
     let nwords = batch_word_count(rows);
     for (observable, total) in observable_ones
@@ -835,6 +958,7 @@ fn append_block_outputs(
         append_bit_rows(
             measurements,
             &runtime.measurement_words,
+            &[],
             runtime.nrecords,
             runtime.batch_words,
             rows,
@@ -843,6 +967,7 @@ fn append_block_outputs(
         append_bit_rows(
             detectors,
             &runtime.detector_words,
+            expected_detectors,
             runtime.ndetectors,
             runtime.batch_words,
             rows,
@@ -851,6 +976,7 @@ fn append_block_outputs(
         append_bit_rows(
             observables,
             observable_words,
+            &[],
             observable_records.len(),
             runtime.batch_words,
             rows,
@@ -967,10 +1093,46 @@ mod tests {
     }
 
     #[test]
+    fn noiseless_reference_normalizes_outputs_before_counting() {
+        let circuit = Circuit::from_text(
+            "X 0\nM 0\nDETECTOR rec[-1]\n\
+             OBSERVABLE_INCLUDE(0)\nOBSERVABLE_INCLUDE(1) rec[-1]\n",
+        )
+        .expect("circuit parses");
+        let reference = circuit.reference_sample().expect("reference samples");
+        assert_eq!(reference.detectors, [1]);
+        assert_eq!(reference.observables, [0, 1]);
+
+        let mut sampler = circuit
+            .compile(SamplerOptions {
+                observable: 1,
+                postselection_mask: vec![1],
+                normalize_syndromes: true,
+                ..Default::default()
+            })
+            .expect("circuit compiles");
+        let result = sampler
+            .sample_with_seed(4, 7, false)
+            .expect("sampling succeeds");
+        assert_eq!(
+            result.counts,
+            SampleCounts {
+                shots: 4,
+                discarded: 0,
+                accepted: 4,
+                logical_errors: 0,
+            }
+        );
+        assert_eq!(result.detectors, [0; 4]);
+        assert_eq!(result.observables, [0; 8]);
+        assert_eq!(result.observable_ones, [0, 0]);
+    }
+
+    #[test]
     fn packed_rows_match_numpy_little_bit_order() {
         let columns = [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1];
         let mut packed = Vec::new();
-        append_bit_rows(&mut packed, &columns, columns.len(), 1, 1, true);
+        append_bit_rows(&mut packed, &columns, &[], columns.len(), 1, 1, true);
         assert_eq!(packed, [0xff, 0x04]);
     }
 

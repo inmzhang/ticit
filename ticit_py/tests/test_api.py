@@ -49,6 +49,23 @@ def test_postselection_and_survivor_alias():
     assert counts_only.observables.shape == (0, 0)
 
 
+def test_normalize_syndromes_uses_cpu_reference_sample():
+    text = (
+        "X 0\nM 0\nDETECTOR rec[-1]\n"
+        "OBSERVABLE_INCLUDE(0)\nOBSERVABLE_INCLUDE(1) rec[-1]"
+    )
+    circuit = ticit.Circuit(text)
+    reference = circuit.reference_sample()
+    assert reference.detectors == [True]
+    assert reference.observables == [False, True]
+
+    program = circuit.compile([1], normalize_syndromes=True, observable=1)
+    result = program.sample(shots=4, seed=7)
+    assert (result.discards, result.logical_errors) == (0, 0)
+    assert result.detectors.tolist() == [[0]] * 4
+    assert result.observables.tolist() == [[0, 0]] * 4
+
+
 def test_bit_packed_records_match_numpy_little_bit_order():
     program = ticit.Circuit(
         "X 0 1 2 3 4 5 6 7 10\nM 0 1 2 3 4 5 6 7 8 9 10"
@@ -80,8 +97,12 @@ def test_parse_metadata_and_argument_errors():
 
     with pytest.raises(ValueError, match="postselection_mask"):
         circuit.compile([1, 1])
-    with pytest.raises(ValueError, match="raw parity"):
-        ticit.compile("M 0", normalize_syndromes=True)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        ticit.compile(
+            "M 0\nDETECTOR rec[-1]",
+            expected_detectors=[0],
+            normalize_syndromes=True,
+        )
     with pytest.raises(ValueError, match="shots must be positive"):
         ticit.Circuit("M 0").compile().sample(shots=0)
 

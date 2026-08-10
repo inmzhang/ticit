@@ -43,6 +43,10 @@ struct Cli {
     #[arg(long)]
     postselect_detectors: bool,
 
+    /// XOR detector and observable outcomes with a noiseless reference sample.
+    #[arg(long)]
+    normalize_syndromes: bool,
+
     /// Write per-shot detector and expectation rows using this path prefix.
     #[arg(long)]
     records_out: Option<PathBuf>,
@@ -69,6 +73,7 @@ fn run_cpu(args: &Cli) -> Result<()> {
         } else {
             Vec::new()
         },
+        normalize_syndromes: args.normalize_syndromes,
         threads: args.threads.get(),
         ..Default::default()
     };
@@ -108,19 +113,26 @@ fn run_gpu(args: &Cli) -> Result<()> {
     if let Some(path) = &args.records_out {
         let circuit = Circuit::from_file(&args.circuit)
             .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
+        let reference = if args.normalize_syndromes {
+            circuit.reference_sample()?
+        } else {
+            ticit::ReferenceSample::default()
+        };
         let exact_ks: Vec<Option<usize>> = if args.exact_k.is_empty() {
             vec![None]
         } else {
             args.exact_k.iter().copied().map(Some).collect()
         };
         for exact_k in exact_ks {
-            let result = ticit::gpu::sample_circuit_records(
+            let result = ticit::gpu::sample_circuit_records_with_reference(
                 &circuit,
                 args.shots,
                 args.seed,
                 args.chunk_shots,
                 0,
                 exact_k,
+                &reference.detectors,
+                &reference.observables,
             )?;
             let output =
                 exact_k.map_or_else(|| path.clone(), |k| suffixed_path(path, &format!("_k{k}")));
@@ -141,6 +153,7 @@ fn run_gpu(args: &Cli) -> Result<()> {
         seed: args.seed,
         chunk_shots: args.chunk_shots,
         postselect_detectors: args.postselect_detectors,
+        normalize_syndromes: args.normalize_syndromes,
     })
 }
 

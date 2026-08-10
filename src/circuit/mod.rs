@@ -16,7 +16,7 @@ use crate::factored::{
 };
 use crate::pending_optimizer::optimize_pending_operations;
 use crate::planner::plan_factored_updates;
-use crate::sampler::prepared::{Sampler, SamplerOptions};
+use crate::sampler::prepared::{ReferenceSample, Sampler, SamplerOptions};
 use crate::symbolic::{SymbolicBool, SymbolicBoolEvaluationPlan, xor_bool};
 
 /// Sampler-specific lowering of a [`Circuit`].
@@ -74,6 +74,15 @@ impl Circuit {
     /// internal index, or the required active state is unsupported.
     pub fn compile(&self, options: SamplerOptions) -> Result<Sampler> {
         Sampler::new(self, options)
+    }
+
+    /// Computes the circuit's full noiseless detector and observable sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if lowering, planning, or execution fails.
+    pub fn reference_sample(&self) -> Result<ReferenceSample> {
+        crate::sampler::prepared::circuit_reference_sample(self)
     }
 
     /// Number of qubits named by the circuit.

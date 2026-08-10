@@ -1938,7 +1938,7 @@ mod kernels {
                 );
             } else {
                 if load_u64(metadata, meta + 8i32) != 0u64 {
-                    let outcome = instruction_expression_rows(
+                    let raw_outcome = instruction_expression_rows(
                         metadata,
                         controls,
                         expression_values,
@@ -1952,6 +1952,9 @@ mod kernels {
                         branches2,
                         branches3,
                     );
+                    let expected =
+                        broadcast_scalar(load_u64(metadata, meta + 9i32) != 0u64, const_shape![1]);
+                    let outcome = ne_tile(raw_outcome, expected);
                     let value: Tile<u64, { [] }> =
                         reduce_sum(select(outcome, one_u64_1, zero_u64_1), 0i32);
                     store_u64(discarded, shot, value);
@@ -2297,7 +2300,7 @@ mod kernels {
                     branches3 = ori(branches3, branch_value);
                 }
             } else {
-                let outcome = instruction_expression(
+                let raw_outcome = instruction_expression(
                     metadata,
                     exogenous_values,
                     instruction,
@@ -2306,6 +2309,9 @@ mod kernels {
                     branches2,
                     branches3,
                 );
+                let expected =
+                    broadcast_scalar(load_u64(metadata, meta + 9i32) != 0u64, const_shape![64]);
+                let outcome = ne_tile(raw_outcome, expected);
                 if load_u64(metadata, meta + 8i32) != 0u64 {
                     discarded = ori(discarded, select(outcome, one_shots, zero_shots));
                 }
@@ -2694,7 +2700,7 @@ mod kernels {
                     expectation,
                 );
             } else {
-                let outcome = instruction_expression_rows(
+                let raw_outcome = instruction_expression_rows(
                     metadata,
                     controls,
                     expression_values,
@@ -2708,6 +2714,9 @@ mod kernels {
                     branches2,
                     branches3,
                 );
+                let expected =
+                    broadcast_scalar(load_u64(metadata, meta + 9i32) != 0u64, const_shape![1]);
+                let outcome = ne_tile(raw_outcome, expected);
                 if keep_records != 0i32 {
                     store_u64_row(
                         detectors,
@@ -3125,7 +3134,7 @@ mod kernels {
                     expectation,
                 );
             } else {
-                let outcome = instruction_expression_rows(
+                let raw_outcome = instruction_expression_rows(
                     metadata,
                     controls,
                     expression_values,
@@ -3139,6 +3148,9 @@ mod kernels {
                     branches2,
                     branches3,
                 );
+                let expected =
+                    broadcast_scalar(load_u64(metadata, meta + 9i32) != 0u64, const_shape![1]);
+                let outcome = ne_tile(raw_outcome, expected);
                 if keep_records != 0i32 {
                     store_u64_row(
                         detectors,
@@ -3604,7 +3616,7 @@ mod kernels {
                     expectation,
                 );
             } else {
-                let outcome = instruction_expression_rows(
+                let raw_outcome = instruction_expression_rows(
                     metadata,
                     controls,
                     expression_values,
@@ -3618,6 +3630,9 @@ mod kernels {
                     branches2,
                     branches3,
                 );
+                let expected =
+                    broadcast_scalar(load_u64(metadata, meta + 9i32) != 0u64, const_shape![1]);
+                let outcome = ne_tile(raw_outcome, expected);
                 if keep_records != 0i32 {
                     store_u64_row(
                         detectors,

@@ -99,9 +99,11 @@ pub(crate) fn run(options: &Args) -> Result<()> {
         } else {
             Vec::new()
         },
+        normalize_syndromes: true,
         sample_chunk_shots: options.sample_chunk_shots,
         batch_size: options.batch_size,
         threads: options.threads,
+        ..Default::default()
     };
     let mut sampler = circuit
         .compile(sampler_options)

@@ -51,7 +51,7 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u64).range(1..=1024))]
     symft_threads_per_block: u64,
 
-    /// Discard shots with nonzero raw detector parity in both samplers.
+    /// Postselect detectors; ticit first normalizes them with a CPU reference.
     #[arg(long)]
     postselect_detectors: bool,
 }
@@ -82,6 +82,7 @@ fn ticit_arguments(options: &Args) -> Vec<OsString> {
         options.shots.to_string().into(),
         "--chunk-shots".into(),
         options.shots_per_launch.to_string().into(),
+        "--normalize-syndromes".into(),
     ];
     if options.postselect_detectors {
         arguments.push("--postselect-detectors".into());
@@ -140,6 +141,7 @@ mod tests {
                 "4096",
                 "--chunk-shots",
                 "128",
+                "--normalize-syndromes",
                 "--postselect-detectors",
             ]
         );

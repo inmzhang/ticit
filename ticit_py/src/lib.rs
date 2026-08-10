@@ -90,6 +90,9 @@ impl PyCircuit {
     #[pyo3(signature = (
         postselection_mask=None,
         *,
+        normalize_syndromes=false,
+        expected_detectors=None,
+        expected_observables=None,
         backend="cpu",
         observable=0,
         threads=1,
@@ -100,6 +103,9 @@ impl PyCircuit {
     fn compile(
         &self,
         postselection_mask: Option<Vec<u8>>,
+        normalize_syndromes: bool,
+        expected_detectors: Option<Vec<u8>>,
+        expected_observables: Option<Vec<u8>>,
         backend: &str,
         observable: usize,
         threads: usize,
@@ -110,6 +116,9 @@ impl PyCircuit {
         compile_circuit(
             &self.0,
             postselection_mask.unwrap_or_default(),
+            normalize_syndromes,
+            expected_detectors.unwrap_or_default(),
+            expected_observables.unwrap_or_default(),
             backend,
             observable,
             threads,
@@ -117,6 +126,14 @@ impl PyCircuit {
             batch_size,
             gpu_chunk_shots,
         )
+    }
+
+    /// Computes the full noiseless detector and observable sample.
+    fn reference_sample(&self) -> PyResult<PyReferenceSample> {
+        self.0
+            .reference_sample()
+            .map(PyReferenceSample::from)
+            .map_err(ticit_error)
     }
 
     /// Number of qubits named by the circuit.
@@ -160,6 +177,32 @@ impl PyCircuit {
     }
 }
 
+/// Full noiseless detector and observable parity vectors.
+#[gen_stub_pyclass]
+#[pyclass(
+    name = "ReferenceSample",
+    module = "ticit._core",
+    frozen,
+    get_all,
+    skip_from_py_object
+)]
+#[derive(Clone, Debug)]
+struct PyReferenceSample {
+    /// One bool per detector declaration.
+    detectors: Vec<bool>,
+    /// One bool per observable index.
+    observables: Vec<bool>,
+}
+
+impl From<ticit::ReferenceSample> for PyReferenceSample {
+    fn from(sample: ticit::ReferenceSample) -> Self {
+        Self {
+            detectors: sample.detectors.into_iter().map(|bit| bit != 0).collect(),
+            observables: sample.observables.into_iter().map(|bit| bit != 0).collect(),
+        }
+    }
+}
+
 enum Backend {
     Cpu(Box<ticit::Sampler>),
     #[cfg(feature = "gpu")]
@@ -167,6 +210,8 @@ enum Backend {
         circuit: Box<ticit::Circuit>,
         chunk_shots: NonZeroUsize,
         postselect_detectors: bool,
+        expected_detectors: Vec<u8>,
+        expected_observables: Vec<u8>,
     },
 }
 
@@ -223,13 +268,17 @@ impl PyProgram {
                     circuit,
                     chunk_shots,
                     postselect_detectors,
-                } => ticit::gpu::sample_circuit(
+                    expected_detectors,
+                    expected_observables,
+                } => ticit::gpu::sample_circuit_with_reference(
                     circuit,
                     shots,
                     seed.unwrap_or_else(random_seed),
                     *chunk_shots,
                     *postselect_detectors,
                     observable,
+                    expected_detectors,
+                    expected_observables,
                 )
                 .map_err(|error| PyRuntimeError::new_err(error.to_string())),
             }
@@ -503,18 +552,16 @@ fn parse_file(path: &str) -> PyResult<PyCircuit> {
 
 /// Compiles circuit text into a reusable `Program`.
 ///
-/// The first five parameters mirror Clifft's `compile` call. ticit uses raw
-/// detector and observable parity, so reference normalization parameters must
-/// remain unset. `backend="gpu"` requires a package built with Cargo feature
-/// `gpu`; the GPU currently supports either no detector postselection or all
-/// detectors postselected.
+/// The first five parameters mirror Clifft's `compile` call.
+/// `normalize_syndromes=True` computes a noiseless reference on the CPU before
+/// sampling. `backend="gpu"` requires a package built with Cargo feature `gpu`.
 ///
 /// Args:
 ///     stim_text: Circuit in ticit's Stim-style text format.
 ///     postselection_mask: Zero/nonzero flag for each detector.
-///     expected_detectors: Reserved for Clifft call compatibility; unsupported.
-///     expected_observables: Reserved for Clifft call compatibility; unsupported.
-///     normalize_syndromes: Reserved for Clifft call compatibility; unsupported.
+///     expected_detectors: Explicit detector reference bits.
+///     expected_observables: Explicit observable reference bits.
+///     normalize_syndromes: Compute and apply a noiseless reference sample.
 ///     backend: `"cpu"` or `"gpu"`.
 ///     observable: Observable index counted as a logical error.
 ///     threads: CPU worker count.
@@ -557,22 +604,13 @@ fn compile(
     batch_size: usize,
     gpu_chunk_shots: usize,
 ) -> PyResult<PyProgram> {
-    if normalize_syndromes
-        || expected_detectors
-            .as_ref()
-            .is_some_and(|values| !values.is_empty())
-        || expected_observables
-            .as_ref()
-            .is_some_and(|values| !values.is_empty())
-    {
-        return Err(PyValueError::new_err(
-            "ticit uses raw parity and does not support reference normalization",
-        ));
-    }
     let circuit = ticit::Circuit::from_text(stim_text).map_err(ticit_error)?;
     compile_circuit(
         &circuit,
         postselection_mask.unwrap_or_default(),
+        normalize_syndromes,
+        expected_detectors.unwrap_or_default(),
+        expected_observables.unwrap_or_default(),
         backend,
         observable,
         threads,
@@ -586,6 +624,9 @@ fn compile(
 fn compile_circuit(
     circuit: &ticit::Circuit,
     mask: Vec<u8>,
+    normalize_syndromes: bool,
+    expected_detectors: Vec<u8>,
+    expected_observables: Vec<u8>,
     backend: &str,
     observable: usize,
     threads: usize,
@@ -605,6 +646,26 @@ fn compile_circuit(
             circuit.detector_count(),
         )));
     }
+    if normalize_syndromes && (!expected_detectors.is_empty() || !expected_observables.is_empty()) {
+        return Err(PyValueError::new_err(
+            "normalize_syndromes cannot be combined with expected_detectors or expected_observables",
+        ));
+    }
+    if !expected_detectors.is_empty() && expected_detectors.len() != circuit.detector_count() {
+        return Err(PyValueError::new_err(format!(
+            "expected_detectors has length {}, expected {}",
+            expected_detectors.len(),
+            circuit.detector_count(),
+        )));
+    }
+    if !expected_observables.is_empty() && expected_observables.len() != circuit.observable_count()
+    {
+        return Err(PyValueError::new_err(format!(
+            "expected_observables has length {}, expected {}",
+            expected_observables.len(),
+            circuit.observable_count(),
+        )));
+    }
     let num_qubits = circuit.qubit_count();
     let num_measurements = circuit.measurement_record_count();
     let num_detectors = circuit.detector_count();
@@ -617,6 +678,9 @@ fn compile_circuit(
                 .compile(ticit::SamplerOptions {
                     observable,
                     postselection_mask: mask,
+                    normalize_syndromes,
+                    expected_detectors,
+                    expected_observables,
                     sample_chunk_shots,
                     batch_size,
                     threads,
@@ -628,6 +692,14 @@ fn compile_circuit(
         "gpu" => {
             #[cfg(feature = "gpu")]
             {
+                let reference = if normalize_syndromes {
+                    circuit.reference_sample().map_err(ticit_error)?
+                } else {
+                    ticit::ReferenceSample {
+                        detectors: expected_detectors,
+                        observables: expected_observables,
+                    }
+                };
                 let requested_all = !mask.is_empty() && mask.iter().all(|&flag| flag != 0);
                 let requested_any = mask.iter().any(|&flag| flag != 0);
                 let postselect_detectors = requested_all || circuit.all_detectors_postselected();
@@ -645,6 +717,8 @@ fn compile_circuit(
                         circuit: Box::new(circuit.clone()),
                         chunk_shots,
                         postselect_detectors,
+                        expected_detectors: reference.detectors,
+                        expected_observables: reference.observables,
                     },
                     "gpu",
                     postselect_detectors,
@@ -719,6 +793,7 @@ fn sample_survivors(
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ParseError", m.py().get_type::<ParseError>())?;
     m.add_class::<PyCircuit>()?;
+    m.add_class::<PyReferenceSample>()?;
     m.add_class::<PyProgram>()?;
     m.add_class::<PySampleResult>()?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;

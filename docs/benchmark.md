@@ -75,6 +75,11 @@ peaks.
   aggregate-counter contract used by the SymFT and Clifft survivor paths. The
   public `sample`/`sample_with_seed` methods additionally materialize Clifft-
   shaped per-shot records and are not represented by these throughput rows.
+- The ticit benchmark invocations now default to `normalize_syndromes=true`,
+  computing one noiseless CPU reference during preparation for both CPU and GPU
+  runs.
+  The tables above were measured before that default changed; their timed
+  sampling regions do not include reference preparation.
 - Circuits: `msc_d3_inject_cultivate_p1e-3`,
   `msc_d5_inject_cultivate_p1e-3`, `distillation`, and
   `pure_surface_d9_r9_p1e-3` from `testdata/circuits/soft/`; CCZ non-tels
@@ -88,7 +93,7 @@ peaks.
   sampling with full syndrome tracking), which is where its throughput
   gap is largest; treat those rows as cross-tool context, not a
   like-for-like kernel comparison.
-- The distillation row uses raw parity and no detector postselection. ticit and
+- The historical distillation row used raw parity and no detector postselection. ticit and
   SymFT produced identical aggregate counters over 60 million shots; Clifft's
   dev95 survivor API reported every attempted shot as passed, so its throughput
   is cross-tool context rather than identical output-contract work. The circuit

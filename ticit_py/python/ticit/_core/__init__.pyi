@@ -11,6 +11,7 @@ __all__ = [
     "ParseError",
     "PauliString",
     "Program",
+    "ReferenceSample",
     "SampleResult",
     "SimulatorError",
     "TableauSimulator",
@@ -80,9 +81,13 @@ class Circuit:
         r"""
         Parses a circuit from a UTF-8 file.
         """
-    def compile(self, postselection_mask: typing.Optional[typing.Sequence[builtins.int]] = None, *, backend: builtins.str = 'cpu', observable: builtins.int = 0, threads: builtins.int = 1, sample_chunk_shots: builtins.int = 0, batch_size: builtins.int = 0, gpu_chunk_shots: builtins.int = 1048576) -> Program:
+    def compile(self, postselection_mask: typing.Optional[typing.Sequence[builtins.int]] = None, *, normalize_syndromes: builtins.bool = False, expected_detectors: typing.Optional[typing.Sequence[builtins.int]] = None, expected_observables: typing.Optional[typing.Sequence[builtins.int]] = None, backend: builtins.str = 'cpu', observable: builtins.int = 0, threads: builtins.int = 1, sample_chunk_shots: builtins.int = 0, batch_size: builtins.int = 0, gpu_chunk_shots: builtins.int = 1048576) -> Program:
         r"""
         Compiles this circuit into a reusable `Program`.
+        """
+    def reference_sample(self) -> ReferenceSample:
+        r"""
+        Computes the full noiseless detector and observable sample.
         """
     def __repr__(self) -> builtins.str: ...
 
@@ -253,6 +258,22 @@ class Program:
         columns and uses NumPy's little bit order.
         """
     def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class ReferenceSample:
+    r"""
+    Full noiseless detector and observable parity vectors.
+    """
+    @property
+    def detectors(self) -> builtins.list[builtins.bool]:
+        r"""
+        One bool per detector declaration.
+        """
+    @property
+    def observables(self) -> builtins.list[builtins.bool]:
+        r"""
+        One bool per observable index.
+        """
 
 @typing.final
 class SampleResult:
@@ -622,18 +643,16 @@ def compile(stim_text: builtins.str, postselection_mask: typing.Optional[typing.
     r"""
     Compiles circuit text into a reusable `Program`.
 
-    The first five parameters mirror Clifft's `compile` call. ticit uses raw
-    detector and observable parity, so reference normalization parameters must
-    remain unset. `backend="gpu"` requires a package built with Cargo feature
-    `gpu`; the GPU currently supports either no detector postselection or all
-    detectors postselected.
+    The first five parameters mirror Clifft's `compile` call.
+    `normalize_syndromes=True` computes a noiseless reference on the CPU before
+    sampling. `backend="gpu"` requires a package built with Cargo feature `gpu`.
 
     Args:
         stim_text: Circuit in ticit's Stim-style text format.
         postselection_mask: Zero/nonzero flag for each detector.
-        expected_detectors: Reserved for Clifft call compatibility; unsupported.
-        expected_observables: Reserved for Clifft call compatibility; unsupported.
-        normalize_syndromes: Reserved for Clifft call compatibility; unsupported.
+        expected_detectors: Explicit detector reference bits.
+        expected_observables: Explicit observable reference bits.
+        normalize_syndromes: Compute and apply a noiseless reference sample.
         backend: `"cpu"` or `"gpu"`.
         observable: Observable index counted as a logical error.
         threads: CPU worker count.

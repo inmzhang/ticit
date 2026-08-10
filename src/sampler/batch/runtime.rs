@@ -219,7 +219,7 @@ fn detector_record_outcome_bits(
 
 /// Detector outcome bits per the presampled convention: record-XOR and
 /// constant outcomes come from the runtime, everything else from the source.
-fn detector_outcome_bits(
+pub(crate) fn detector_outcome_bits(
     runtime: &BatchFactoredExecutorState,
     instruction: &RecordDetector,
     source: &BatchSignSource<'_>,

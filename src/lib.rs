@@ -35,7 +35,8 @@ pub use crate::pauli::{
     Pauli, PauliBasis, PauliString, neg, pauli_identity, pauli_string, pauli_x, pauli_y, pauli_z,
 };
 pub use crate::sampler::prepared::{
-    SampleCounts, SampleResult, Sampler, SamplerInfo, SamplerOptions, SamplingTiming,
+    ReferenceSample, SampleCounts, SampleResult, Sampler, SamplerInfo, SamplerOptions,
+    SamplingTiming,
 };
 pub use crate::tableau_simulator::{
     BatchOutcome, Gate1Q, Instruction, MeasureResult, SimError, TableauSimulator,

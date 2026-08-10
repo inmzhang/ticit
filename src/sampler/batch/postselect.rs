@@ -5,9 +5,10 @@
 //! of the batch is dead to be worth the move.
 
 use super::runtime::{
-    BatchSignSource, execute_batch_component_instruction, execute_batch_instruction,
-    execute_shot_major_rotation_run, expression_slice_word,
+    BatchSignSource, detector_outcome_bits, execute_batch_component_instruction,
+    execute_batch_instruction, execute_shot_major_rotation_run, expression_slice_word,
 };
+use super::symbols::write_batch_detector_record;
 use super::{
     BatchFactoredExecutorState, batch_record_offset, batch_shot_mask, batch_shot_word,
     batch_word_count, live_word_mask_for_shots,
@@ -56,6 +57,8 @@ pub struct BatchDetectorPostselectionOptions<'a> {
     /// Record groups (the logical observable's) pinned live to program end so
     /// the final compaction preserves them for accumulation.
     pub retained_record_uses: Option<&'a [Vec<i32>]>,
+    /// Noiseless detector bits XORed into postselection outcomes.
+    pub expected_detectors: &'a [u8],
 }
 
 impl Default for BatchDetectorPostselectionOptions<'_> {
@@ -63,6 +66,7 @@ impl Default for BatchDetectorPostselectionOptions<'_> {
         Self {
             mask_dead_shots_min_fraction_denominator: 2,
             retained_record_uses: None,
+            expected_detectors: &[],
         }
     }
 }
@@ -628,18 +632,27 @@ fn mark_dead_from_detector_bits(
     runtime: &BatchFactoredExecutorState,
     detector_bits: &[u64],
     scratch: &mut BatchDetectorPostselectionScratch,
+    expected: bool,
 ) -> usize {
     if runtime.active_shots == 0 {
         return 0;
     }
-    mark_dead_words(runtime, scratch, |word, live| detector_bits[word] & live)
+    mark_dead_words(runtime, scratch, |word, live| {
+        if expected {
+            !detector_bits[word] & live
+        } else {
+            detector_bits[word] & live
+        }
+    })
 }
 
 fn mark_dead_from_constant_detector(
     runtime: &BatchFactoredExecutorState,
-    fired: bool,
+    raw_fired: bool,
     scratch: &mut BatchDetectorPostselectionScratch,
+    expected: bool,
 ) -> usize {
+    let fired = raw_fired != expected;
     if !fired || runtime.active_shots == 0 {
         return 0;
     }
@@ -650,6 +663,7 @@ fn mark_dead_from_detector_records(
     runtime: &BatchFactoredExecutorState,
     instruction: &RecordDetector,
     scratch: &mut BatchDetectorPostselectionScratch,
+    expected: bool,
 ) -> Result<usize> {
     if runtime.active_shots == 0 || instruction.records.is_empty() {
         return Ok(0);
@@ -664,7 +678,8 @@ fn mark_dead_from_detector_records(
     if instruction.records.len() == 1 {
         let base = batch_record_offset(runtime, instruction.records[0], 0);
         return Ok(mark_dead_words(runtime, scratch, |word, live| {
-            runtime.measurement_words[base + word] & live
+            let raw = runtime.measurement_words[base + word];
+            if expected { !raw & live } else { raw & live }
         }));
     }
     Ok(mark_dead_words(runtime, scratch, |word, live| {
@@ -672,7 +687,11 @@ fn mark_dead_from_detector_records(
         for &record in &instruction.records {
             fired ^= runtime.measurement_words[batch_record_offset(runtime, record, word)];
         }
-        fired & live
+        if expected {
+            !fired & live
+        } else {
+            fired & live
+        }
     }))
 }
 
@@ -913,8 +932,9 @@ pub fn execute_batch_postselected_in_place(
                     first_sample_shot,
                 }
             };
-            let step =
-                execute_postselected_step(runtime, program, &source, idx, scratch, &mut work);
+            let step = execute_postselected_step(
+                runtime, program, &source, idx, scratch, options, &mut work,
+            );
             if workspace_materialized {
                 scratch.expression_words = expression_words_view;
             }
@@ -951,6 +971,7 @@ fn execute_postselected_step(
     source: &BatchSignSource<'_>,
     idx: usize,
     scratch: &mut BatchDetectorPostselectionScratch,
+    options: &BatchDetectorPostselectionOptions<'_>,
     work: &mut Vec<u64>,
 ) -> Result<(usize, usize)> {
     if runtime.dense_shot_major_active && !runtime.active_components_enabled {
@@ -979,13 +1000,26 @@ fn execute_postselected_step(
                 .kind
                 != ActiveComponentStepKind::None;
         if !component_handled {
-            let discarded_now = if !detector.records.is_empty() {
-                mark_dead_from_detector_records(runtime, detector, scratch)?
+            let expected = options
+                .expected_detectors
+                .get((detector.detector - 1) as usize)
+                .is_some_and(|&bit| bit != 0);
+            let discarded_now = if runtime.store_detector_records {
+                detector_outcome_bits(runtime, detector, source, idx, work)?;
+                write_batch_detector_record(runtime, detector.detector, work)?;
+                mark_dead_from_detector_bits(runtime, work, scratch, expected)
+            } else if !detector.records.is_empty() {
+                mark_dead_from_detector_records(runtime, detector, scratch, expected)?
             } else if detector.outcome.conditions.is_empty() {
-                mark_dead_from_constant_detector(runtime, detector.outcome.constant, scratch)
+                mark_dead_from_constant_detector(
+                    runtime,
+                    detector.outcome.constant,
+                    scratch,
+                    expected,
+                )
             } else {
                 source.eval(idx, runtime, work)?;
-                mark_dead_from_detector_bits(runtime, work, scratch)
+                mark_dead_from_detector_bits(runtime, work, scratch, expected)
             };
             return Ok((1, discarded_now));
         }

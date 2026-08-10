@@ -778,7 +778,7 @@ mod tests {
         let mut scratch = BatchDetectorPostselectionScratch::default();
         let options = BatchDetectorPostselectionOptions {
             mask_dead_shots_min_fraction_denominator: denominator,
-            retained_record_uses: None,
+            ..Default::default()
         };
         let result = execute_batch_postselected_in_place(
             &mut runtime,

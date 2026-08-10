@@ -112,6 +112,9 @@ pub struct GpuOptions {
 
     /// Report detector-rejected shots (execution currently evaluates all shots).
     pub postselect_detectors: bool,
+
+    /// Compute a noiseless reference on the CPU before GPU sampling.
+    pub normalize_syndromes: bool,
 }
 
 struct WideBuffers {
@@ -125,12 +128,42 @@ struct WideBuffers {
     scratch_dimension: usize,
 }
 
+fn apply_detector_reference(plan: &mut plan::GpuPlan, expected_detectors: &[u8]) {
+    for instruction in &mut plan.instructions {
+        if let Some(detector) = instruction.detector {
+            instruction.z_without_pivot = u64::from(
+                expected_detectors
+                    .get(detector)
+                    .is_some_and(|&bit| bit != 0),
+            );
+        }
+    }
+}
+
+fn normalized_logical_errors(
+    shots: u64,
+    discarded: u64,
+    raw_logical_errors: u64,
+    expected: bool,
+) -> u64 {
+    if expected {
+        shots - discarded - raw_logical_errors
+    } else {
+        raw_logical_errors
+    }
+}
+
 /// Runs the experimental GPU sampler.
 pub fn run(args: &GpuOptions) -> Result<()> {
     let parse_start = Instant::now();
     let parsed = Circuit::from_file(&args.circuit)
         .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
     let parse_s = parse_start.elapsed().as_secs_f64();
+    let reference = if args.normalize_syndromes {
+        parsed.reference_sample()?
+    } else {
+        crate::ReferenceSample::default()
+    };
 
     sample_circuit_impl(
         &parsed,
@@ -143,6 +176,8 @@ pub fn run(args: &GpuOptions) -> Result<()> {
         Some(&args.circuit),
         false,
         None,
+        &reference.detectors,
+        &reference.observables,
     )?;
     Ok(())
 }
@@ -197,6 +232,44 @@ pub fn sample_circuit(
         None,
         false,
         None,
+        &[],
+        &[],
+    )
+}
+
+/// Samples on CUDA while XOR-normalizing against explicit reference vectors.
+///
+/// The reference vectors are normally produced once by
+/// [`Circuit::reference_sample`] on the CPU.
+///
+/// # Errors
+///
+/// Returns the same errors as [`sample_circuit`], plus an error when either
+/// reference vector has the wrong length.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_with_reference(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselect_detectors: bool,
+    observable: usize,
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
+    sample_circuit_impl(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselect_detectors,
+        observable,
+        0.0,
+        None,
+        false,
+        None,
+        expected_detectors,
+        expected_observables,
     )
 }
 
@@ -219,6 +292,35 @@ pub fn sample_circuit_records(
     observable: usize,
     exact_k: Option<usize>,
 ) -> Result<SampleResult> {
+    sample_circuit_records_with_reference(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        observable,
+        exact_k,
+        &[],
+        &[],
+    )
+}
+
+/// Retains GPU records while XOR-normalizing against explicit references.
+///
+/// # Errors
+///
+/// Returns the same errors as [`sample_circuit_records`], plus an error when
+/// either reference vector has the wrong length.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_records_with_reference(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    observable: usize,
+    exact_k: Option<usize>,
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
     sample_circuit_impl(
         circuit,
         shots,
@@ -230,6 +332,8 @@ pub fn sample_circuit_records(
         None,
         true,
         exact_k,
+        expected_detectors,
+        expected_observables,
     )
 }
 
@@ -245,10 +349,29 @@ fn sample_circuit_impl(
     report_path: Option<&Path>,
     keep_records: bool,
     exact_k: Option<usize>,
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
 ) -> Result<SampleResult> {
     if shots == 0 {
         bail!("shots must be positive");
     }
+    if !expected_detectors.is_empty() && expected_detectors.len() != parsed.detector_count() {
+        bail!(
+            "expected_detectors has length {}, expected {}",
+            expected_detectors.len(),
+            parsed.detector_count(),
+        );
+    }
+    if !expected_observables.is_empty() && expected_observables.len() != parsed.observable_count() {
+        bail!(
+            "expected_observables has length {}, expected {}",
+            expected_observables.len(),
+            parsed.observable_count(),
+        );
+    }
+    let expected_logical = expected_observables
+        .get(observable)
+        .is_some_and(|&bit| bit != 0);
 
     let plan_start = Instant::now();
     let postselection_mask = if postselect_detectors {
@@ -268,12 +391,13 @@ fn sample_circuit_impl(
     let input = make_circuit_sampling_input(
         program,
         logical_records,
-        0,
-        parsed.observables.len(),
+        observable,
+        parsed.observable_count(),
         SamplingTiming::default(),
     );
-    let gpu_plan = plan::GpuPlan::build(&input.program, &input.logical_records)
+    let mut gpu_plan = plan::GpuPlan::build(&input.program, &input.logical_records)
         .context("failed to lower the GPU plan")?;
+    apply_detector_reference(&mut gpu_plan, expected_detectors);
     // Detector postselection is carried by each `OP_DETECTOR`'s own postselect
     // bit, which planning derives from `postselection_mask`, so every kernel
     // runs the whole instruction stream.
@@ -998,13 +1122,22 @@ fn sample_circuit_impl(
             .transpose()?;
         copy_s += copy_start.elapsed().as_secs_f64();
 
+        let mut chunk_discarded = 0u64;
+        let mut chunk_logical_errors = 0u64;
         for counts in count_partials
             .chunks_exact(2)
             .take(count_partial_blocks as usize)
         {
-            discarded += counts[0];
-            logical_errors += counts[1];
+            chunk_discarded += counts[0];
+            chunk_logical_errors += counts[1];
         }
+        discarded += chunk_discarded;
+        logical_errors += normalized_logical_errors(
+            chunk as u64,
+            chunk_discarded,
+            chunk_logical_errors,
+            expected_logical,
+        );
         if let (Some(detector_chunk), Some(expectation_chunk)) = (detector_chunk, expectation_chunk)
         {
             for shot in 0..chunk {
@@ -1180,6 +1313,21 @@ fn sample_circuit_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_reduction_applies_cpu_reference_bits() {
+        let circuit = Circuit::from_text("X 0\nM 0\nDETECTOR rec[-1]\n").expect("parses");
+        let program = plan_circuit(&circuit, &[1]).expect("plans");
+        let mut gpu_plan = plan::GpuPlan::build(&program, &[]).expect("lowers");
+        apply_detector_reference(&mut gpu_plan, &[1]);
+        let detector = gpu_plan
+            .instructions
+            .iter()
+            .find(|instruction| instruction.detector == Some(0))
+            .expect("detector instruction");
+        assert_eq!(detector.z_without_pivot, 1);
+        assert_eq!(normalized_logical_errors(10, 3, 2, true), 5);
+    }
 
     #[test]
     fn exact_k_replaces_independent_draws_with_uniform_weight_k_rows() {
