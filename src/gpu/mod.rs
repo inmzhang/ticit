@@ -388,20 +388,24 @@ fn sample_circuit_impl(
         cutile::api::zeros(&[expression_partial_capacity]).sync_on(&stream)?;
     let block_counts: Arc<Tensor<u64>> =
         Arc::new(cutile::api::zeros(&[max_sample_blocks * 2]).sync_on(&stream)?);
-    let expectations: Tensor<f32> = cutile::api::zeros(&[input
-        .program
-        .nexpvals
-        .max(1)
-        .checked_mul(max_chunk)
-        .context("GPU expectation buffer is too large")?])
-    .sync_on(&stream)?;
-    let detector_values: Tensor<u64> = cutile::api::zeros(&[input
-        .program
-        .ndetectors
-        .max(1)
-        .checked_mul(max_chunk)
-        .context("GPU detector buffer is too large")?])
-    .sync_on(&stream)?;
+    let expectations: Arc<Tensor<f32>> = Arc::new(
+        cutile::api::zeros(&[input
+            .program
+            .nexpvals
+            .max(1)
+            .checked_mul(max_chunk)
+            .context("GPU expectation buffer is too large")?])
+        .sync_on(&stream)?,
+    );
+    let detector_values: Arc<Tensor<u64>> = Arc::new(
+        cutile::api::zeros(&[input
+            .program
+            .ndetectors
+            .max(1)
+            .checked_mul(max_chunk)
+            .context("GPU detector buffer is too large")?])
+        .sync_on(&stream)?,
+    );
     let count_partials: Arc<Tensor<u64>> = Arc::new(
         cutile::api::zeros(&[max_sample_blocks.div_ceil(COUNT_REDUCTION_BLOCKS) * 2])
             .sync_on(&stream)?,
