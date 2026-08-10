@@ -36,16 +36,28 @@ const WIDE_LARGE_STATE_CHUNK_SHOTS: usize = 256;
 
 fn condition_exact_k(program: &mut FactoredInstructionProgram, k: usize) -> Result<()> {
     ensure!(
-        program.sampled_categorical_distributions.is_empty()
-            && program.sampled_rare_categorical_groups.is_empty()
+        program.sampled_rare_categorical_groups.is_empty()
             && program.sampled_low_probability_bernoulli_groups.is_empty(),
-        "exact-k sampling currently requires only ordinary Bernoulli sources"
+        "exact-k sampling does not support sparse or multi-outcome sources"
     );
     ensure!(
         program.sampled_bernoulli_conditions.len() == program.sampled_bernoulli_probabilities.len(),
         "Bernoulli sampling plan has mismatched conditions and probabilities"
     );
-    let n = program.sampled_bernoulli_conditions.len();
+    let mut conditions = std::mem::take(&mut program.sampled_bernoulli_conditions);
+    for distribution in std::mem::take(&mut program.sampled_categorical_distributions) {
+        ensure!(
+            distribution.nbits == 1
+                && distribution.conditions.len() == 1
+                && distribution.assignments.len() == 2
+                && distribution.assignments.iter().all(|row| row.len() == 1)
+                && distribution.assignments.iter().any(|row| row[0] & 1 == 0)
+                && distribution.assignments.iter().any(|row| row[0] & 1 == 1),
+            "exact-k sampling requires independent binary sources"
+        );
+        conditions.push(distribution.conditions[0]);
+    }
+    let n = conditions.len();
     ensure!(n != 0, "exact-k sampling found no Bernoulli sources");
     // ponytail: exhaustive masks keep the exact-k path tiny; use a
     // combinatorial generator when a validation circuit exceeds 20 sources.
@@ -62,7 +74,6 @@ fn condition_exact_k(program: &mut FactoredInstructionProgram, k: usize) -> Resu
         .map(|mask| vec![mask])
         .collect();
     let probability = 1.0 / assignments.len() as f64;
-    let conditions = std::mem::take(&mut program.sampled_bernoulli_conditions);
     program.sampled_bernoulli_probabilities.clear();
     program
         .sampled_categorical_distributions
@@ -1178,8 +1189,22 @@ mod tests {
     #[test]
     fn exact_k_replaces_independent_draws_with_uniform_weight_k_rows() {
         let mut program = FactoredInstructionProgram {
-            sampled_bernoulli_conditions: vec![1, 2, 3, 4],
-            sampled_bernoulli_probabilities: vec![0.125; 4],
+            sampled_bernoulli_conditions: vec![1, 2],
+            sampled_bernoulli_probabilities: vec![0.125; 2],
+            sampled_categorical_distributions: vec![
+                SymbolicCategoricalDistribution {
+                    nbits: 1,
+                    conditions: vec![3],
+                    assignments: vec![vec![0], vec![1]],
+                    probabilities: vec![0.875, 0.125],
+                },
+                SymbolicCategoricalDistribution {
+                    nbits: 1,
+                    conditions: vec![4],
+                    assignments: vec![vec![1], vec![0]],
+                    probabilities: vec![0.125, 0.875],
+                },
+            ],
             ..FactoredInstructionProgram::default()
         };
         condition_exact_k(&mut program, 2).expect("valid exact-k plan");
