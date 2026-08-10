@@ -334,6 +334,9 @@ fn reference_sample_for_program(
     program: &FactoredInstructionProgram,
     observable_records: &[Vec<Vec<i32>>],
 ) -> Result<ReferenceSample> {
+    if program.ndetectors == 0 && observable_records.is_empty() {
+        return Ok(ReferenceSample::default());
+    }
     let mut samples = PackedPresampledExogenous::default();
     prepare_presampled_exogenous_packed(&mut samples, program)?;
     samples.nshots = 1;
