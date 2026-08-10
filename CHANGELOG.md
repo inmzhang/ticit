@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/inmzhang/ticit/compare/v0.1.3...v0.2.0) - 2026-08-10
+
+### Added
+
+- *(simulator)* [**breaking**] replay parsed circuits
+
+### Other
+
+- fix API link consistency
+- compare tableau and sampler performance
+
 ## [0.1.3](https://github.com/inmzhang/ticit/compare/v0.1.2...v0.1.3) - 2026-08-09
 
 ### Fixed
