@@ -106,23 +106,6 @@
       "sha256": "c2b4566917bd9bf27a5705284dac02700ef0dcc7c03c91066670db376d633a6d"
     },
     {
-      "file": "msc_proxy_d7_unverified_p1e-3.stim",
-      "family": "msc_performance_proxy",
-      "dialect": "symft_clifft_extended_stim",
-      "distance": 7,
-      "rounds": null,
-      "physical_error_rate": 0.001,
-      "coherent_rz_half_turns": null,
-      "correctness_status": "unverified_performance_only",
-      "qubits": 76,
-      "measurements": 310,
-      "detectors": 299,
-      "observables": 1,
-      "lines": 1014,
-      "bytes": 66102,
-      "sha256": "a2f82a291a0f60e3c7cc297a094fd5d75f262ea51b77671d68326514a5b1ad49"
-    },
-    {
       "file": "pure_surface_d7_r7_p1e-3.stim",
       "family": "pure_clifford_surface_code",
       "dialect": "stim",

@@ -42,6 +42,7 @@ pub struct GpuInstruction {
     pub z_without_pivot: u64,
     pub branch: Option<usize>,
     pub expectation: Option<usize>,
+    pub detector: Option<usize>,
     pub params: [f32; PARAM_WORDS],
 }
 
@@ -165,10 +166,6 @@ impl GpuPlan {
             "the GPU plan supports max_k <= {MAX_GPU_K}, got {}",
             program.max_k
         );
-        ensure!(
-            program.nexpvals == 0 || program.max_k <= 10,
-            "GPU expectation probes currently require max_k <= 10"
-        );
         let resident = program.max_k <= 12;
 
         let adaptive_branches = program
@@ -256,6 +253,7 @@ impl GpuPlan {
                         z_without_pivot: 0,
                         branch: None,
                         expectation: None,
+                        detector: None,
                         params: [
                             kernel.cos_kernel_angle as f32,
                             kernel.minus_even_coefficient.re as f32,
@@ -287,6 +285,7 @@ impl GpuPlan {
                         z_without_pivot: 0,
                         branch: None,
                         expectation: None,
+                        detector: None,
                         params: [
                             inst.kernel_angle.cos() as f32,
                             inst.kernel_angle.sin() as f32,
@@ -310,6 +309,7 @@ impl GpuPlan {
                             z_without_pivot: 0,
                             branch: None,
                             expectation: Some(exp_val as usize),
+                            detector: None,
                             params: [0.0; PARAM_WORDS],
                         });
                     } else {
@@ -330,10 +330,11 @@ impl GpuPlan {
                         xmask: 0,
                         zmask: 0,
                         pivot: 0,
-                        diagonal_phase: false,
+                        diagonal_phase: inst.postselect,
                         z_without_pivot: 0,
                         branch: None,
                         expectation: None,
+                        detector: Some((inst.detector - 1) as usize),
                         params: [0.0; PARAM_WORDS],
                     });
                 }
@@ -399,6 +400,7 @@ impl GpuPlan {
                         z_without_pivot,
                         branch,
                         expectation,
+                        detector: None,
                         params: [
                             kernel.nondiagonal_coefficient1_even.re as f32,
                             kernel.nondiagonal_coefficient1_even.im as f32,
@@ -441,6 +443,7 @@ impl GpuPlan {
                                 z_without_pivot: 0,
                                 branch: Some(branch),
                                 expectation: None,
+                                detector: None,
                                 params: [0.0; PARAM_WORDS],
                             });
                         }
@@ -538,7 +541,12 @@ impl GpuPlan {
                         slot as i32
                     }),
             );
-            expectations.push(instruction.expectation.map_or(-1, |index| index as i32));
+            expectations.push(
+                instruction
+                    .expectation
+                    .or(instruction.detector)
+                    .map_or(-1, |index| index as i32),
+            );
         }
         (metadata, parameters, controls, expectations)
     }
@@ -1131,6 +1139,7 @@ mod tests {
             z_without_pivot: 0,
             branch: None,
             expectation: None,
+            detector: None,
             params: [0.0; PARAM_WORDS],
         };
         let mut detector = rotation(0, 0);
@@ -1179,6 +1188,7 @@ mod tests {
             FactoredInstruction::RecordDetector(RecordDetector {
                 records: vec![1],
                 detector: 1,
+                postselect: true,
                 ..RecordDetector::default()
             }),
         ];
@@ -1192,6 +1202,8 @@ mod tests {
         assert_eq!(plan.instructions.len(), 2);
         assert_eq!(plan.detector_start, 2);
         assert_eq!(plan.instructions[1].opcode, OP_DETECTOR);
+        assert!(plan.instructions[1].diagonal_phase);
+        assert_eq!(plan.instructions[1].detector, Some(0));
         assert_eq!(plan.instructions[1].expression.branch_masks[0], 1);
         assert_eq!(plan.logical.branch_masks[0], 1);
 
@@ -1199,10 +1211,30 @@ mod tests {
         assert_eq!(metadata.len(), 2 * META_WORDS);
         assert_eq!(parameters.len(), 2 * PARAM_WORDS);
         assert_eq!(controls.len(), 2 * CONTROL_WORDS);
-        assert_eq!(expectations, [-1, -1]);
+        assert_eq!(expectations, [-1, 0]);
         assert_eq!(controls, [0, 0]);
         assert_eq!(metadata[10], 0);
         assert_eq!(metadata[11], 1);
+    }
+
+    #[test]
+    fn detector_plan_preserves_postselection_flag() {
+        for postselect in [false, true] {
+            let program = FactoredInstructionProgram::new(
+                1,
+                0,
+                vec![FactoredInstruction::RecordDetector(RecordDetector {
+                    detector: 1,
+                    postselect,
+                    ..RecordDetector::default()
+                })],
+                0,
+            )
+            .expect("valid test program");
+
+            let plan = GpuPlan::build(&program, &[]).expect("GPU plan");
+            assert_eq!(plan.instructions[0].diagonal_phase, postselect);
+        }
     }
 
     #[test]

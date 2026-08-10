@@ -113,53 +113,53 @@ peaks.
 
 ## GPU: ticit vs SymFT
 
-Measured with ticit GPU code at `c6d0db1` and SymFT at `bd77739` on
-2026-08-09; the two wide-state rows were remeasured in paired runs after the
-generic bit-mask improvement at `bf46366`. Rates are public batch-sampler
-throughput (`sample_s`) on one RTX 4090 or H200; parsing, planning, RNG setup,
-and ticit's cuTile JIT are reported separately rather than charged to sampling. Each
-sampler used its strongest measured memory-feasible launch configuration.
+Remeasured with ticit `339d96e` and SymFT `925078b` on RTX 4090 D cards on
+2026-08-10. Rates are sampling-only attempted shots/s after per-circuit tuning;
+parsing, planning, RNG setup, and ticit's one-time cuTile JIT are reported
+separately. H200 results are omitted from this refresh.
 
 ### SOFT circuits (shots/s)
 
-| Circuit | 4090 ticit | 4090 SymFT | Ratio | H200 ticit | H200 SymFT | Ratio |
-|---|---:|---:|---:|---:|---:|---:|
-| `msc_d3` | 434 M | 72.4 M | 5.99x | 375 M | 110 M | 3.42x |
-| `coherent_d3_r1` | 603 M | 132 M | 4.56x | 759 M | 190 M | 3.99x |
-| `coherent_d3_r3` | 10.1 M | 21.0 M | 0.48x | 9.80 M | 21.3 M | 0.46x |
-| `distillation` | 16.7 M | 13.9 M | 1.20x | 15.9 M | 15.7 M | 1.01x |
-| `msc_d5` | 6.89 M | 4.24 M | 1.62x | 6.66 M | 6.42 M | 1.04x |
-| `msc_proxy_d7` | 6.15 M | 3.15 M | 1.95x | 5.78 M | 4.37 M | 1.32x |
-| `pure_d7` | 12.4 M | 7.01 M | 1.77x | 11.0 M | 8.04 M | 1.36x |
-| `pure_d9` | 8.91 M | 4.39 M | 2.03x | 7.83 M | 5.21 M | 1.50x |
-| `coherent_d5_r1` | 1.36 M | 1.49 M | 0.91x | 790 k | 2.19 M | 0.36x |
-| `coherent_d5_r5` | 274 | 192 | 1.43x | 577 | 676 | 0.85x |
-| `MSC_d7` sparse | 36.1 k | 31.2 k | 1.16x | 77.4 k | 61.9 k | 1.25x |
-| **Geometric mean** |  |  | **1.66x** |  |  | **1.19x** |
+| Circuit | ticit | SymFT | Ratio |
+|---|---:|---:|---:|
+| `msc_d3` | 404 M | 65.8 M | 6.15x |
+| `coherent_d3_r1` | 840 M | 117 M | 7.16x |
+| `coherent_d3_r3` | 6.72 M | 23.5 M | 0.286x |
+| `distillation` | 16.7 M | 18.0 M | 0.927x |
+| `msc_d5` | 7.67 M | 4.96 M | 1.55x |
+| `pure_d7` | 4.93 M | 4.40 M | 1.12x |
+| `pure_d9` | 2.48 M | 2.41 M | 1.03x |
+| `coherent_d5_r1` | 1.33 M | 1.28 M | 1.04x |
+| `coherent_d5_r5` | 91.2 | 54.0 | 1.69x |
+| **Geometric mean** |  |  | **1.49x** |
 
-ticit wins 9 of 11 circuits on the RTX 4090 and 8 of 11 on the H200.
+ticit wins seven of the nine retained SOFT circuits. The unverified
+`msc_proxy_d7` and `MSC_d7` fixtures were removed and are not benchmarked.
 
 ### CCZ non-tels circuits (shots/s, 65,536-shot batch)
 
-| Circuit | 4090 ticit | 4090 SymFT | Ratio | H200 ticit | H200 SymFT | Ratio |
-|---|---:|---:|---:|---:|---:|---:|
-| `d05_p0` | 4.52 M | 184 k | 24.6x | 4.39 M | 290 k | 15.1x |
-| `d05_p1e-3` | 4.26 M | 17.8 k | 240x | 4.16 M | 36.1 k | 115x |
-| `d07_p0` | 3.76 M | 47.6 k | 78.9x | 3.63 M | 79.8 k | 45.5x |
-| `d07_p1e-3` | 3.34 M | 2.01 k | 1,663x | 3.13 M | 5.38 k | 582x |
-| `d09_p0` | 2.70 M | 12.6 k | 214x | 2.93 M | 25.5 k | 115x |
-| `d09_p1e-3` | 2.09 M | 10.2 k | 205x | 2.25 M | 631 | 3,568x |
-| `d11_p0` | 2.07 M | 5.26 k | 394x | 2.46 M | 8.11 k | 303x |
-| `d11_p1e-3` | 1.34 M | 5.16 k | 260x | 1.48 M | 7.55 k | 196x |
-| **Geometric mean** |  |  | **208x** |  |  | **180x** |
+| Circuit | ticit | SymFT | Ratio |
+|---|---:|---:|---:|
+| `d05_p0` | 4.57 M | 187 k | 24.5x |
+| `d05_p1e-3` | 3.79 M | 23.3 k | 163x |
+| `d07_p0` | 3.80 M | 46.8 k | 81.1x |
+| `d07_p1e-3` | 3.03 M | 1.73 k | 1,750x |
+| `d09_p0` | 2.79 M | 12.0 k | 232x |
+| `d09_p1e-3` | 2.14 M | 10.3 k | 207x |
+| `d11_p0` | 2.07 M | 5.31 k | 390x |
+| `d11_p1e-3` | 1.23 M | 4.75 k | 260x |
+| **Geometric mean** |  |  | **202x** |
 
-The comparison uses raw detector parity and observable 0 for both tools,
-avoiding SOFT benchmark issues #8 and #9. Independent RNG streams make exact
-counters differ, but ticit's GPU results pass CPU differential checks. cuTile's
-one-time kernel JIT costs about 9--79 seconds by circuit; SymFT is AOT-compiled,
-so latency-sensitive one-off jobs should include that separately. Full settings,
-unrounded rates, and compilation caveats are in
-[`2026-08-09-gpu-comparison.md`](impl-notes/perf/2026-08-09-gpu-comparison.md).
+Only `msc_d3` and `msc_d5` postselect detectors; every other row disables
+detector postselection and counts observable 0. Before benchmarking, all 17
+circuits passed a three-way Ticit CPU / Ticit GPU / SymFT GPU statistical
+gate, and every retained CCZ expectation channel passed a Bonferroni-corrected
+Ticit CPU/GPU comparison. The old Ticit SOFT rates were not reproduced after
+the correctness fixes—for example, `pure_d9` is 2.48 M rather than 8.91 M
+shots/s. Full
+correctness counts, unrounded rates, tuning sweeps, fixed-cost timings, and raw
+log locations are in
+[`2026-08-10-gpu-correctness-and-comparison.md`](impl-notes/perf/2026-08-10-gpu-correctness-and-comparison.md).
 
 These tables are maintained by hand: when a change moves any number
 meaningfully, the tables are re-measured and updated in the same commit

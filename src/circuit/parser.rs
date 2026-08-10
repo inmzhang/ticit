@@ -2370,7 +2370,7 @@ mod circuit_tests {
     #[test]
     fn every_soft_benchmark_circuit_parses() {
         let directory = common::soft_benchmark_circuits();
-        parse_corpus(&directory, "stim", 11);
+        parse_corpus(&directory, "stim", 9);
         // Spot-check against benchmark/circuit/manifest.json, which records
         // `qubits` and `measurements` per circuit.
         let path = directory.join("msc_d3_inject_cultivate_p1e-3.stim");

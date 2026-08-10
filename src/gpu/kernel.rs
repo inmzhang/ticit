@@ -719,6 +719,68 @@ mod kernels {
         )
     }
 
+    fn measurement_probability_large(
+        re: Tile<f32, { [1, 4096] }>,
+        im: Tile<f32, { [1, 4096] }>,
+        basis: Tile<u64, { [1, 4096] }>,
+        parameters: *mut f32,
+        params: i32,
+        xmask: u64,
+        zmask: u64,
+        pivot: u64,
+        diagonal_phase_word: u64,
+    ) -> Tile<f32, { [1] }> {
+        let zero_state: Tile<f32, { [1, 4096] }> = constant(0.0f32, const_shape![1, 4096]);
+        let one_state: Tile<f32, { [1, 4096] }> = constant(1.0f32, const_shape![1, 4096]);
+        let negative_one_state: Tile<f32, { [1, 4096] }> = constant(-1.0f32, const_shape![1, 4096]);
+        let inv_sqrt2_state: Tile<f32, { [1, 4096] }> = constant(INV_SQRT2, const_shape![1, 4096]);
+        let zero_basis: Tile<u64, { [1, 4096] }> = constant(0u64, const_shape![1, 4096]);
+        let zero_probability: Tile<f32, { [1] }> = constant(0.0f32, const_shape![1]);
+        let one_probability: Tile<f32, { [1] }> = constant(1.0f32, const_shape![1]);
+        let probability_true = if xmask == 0u64 {
+            let odd = ne_tile(
+                parity_large(andi(basis, broadcast_scalar(zmask, const_shape![1, 4096]))),
+                zero_basis,
+            );
+            let target = diagonal_phase_word == 0u64;
+            let selected = eq_tile(odd, broadcast_scalar(target, const_shape![1, 4096]));
+            reduce_sum(select(selected, re * re + im * im, zero_state), 1i32)
+        } else {
+            let partner_re = flip_mask_large(re, xmask);
+            let partner_im = flip_mask_large(im, xmask);
+            let odd = ne_tile(
+                parity_large(andi(basis, broadcast_scalar(zmask, const_shape![1, 4096]))),
+                zero_basis,
+            );
+            let direction = select(odd, one_state, negative_one_state);
+            let cr =
+                direction * broadcast_scalar(load_f32(parameters, params), const_shape![1, 4096]);
+            let ci = direction
+                * broadcast_scalar(load_f32(parameters, params + 1i32), const_shape![1, 4096]);
+            let ar = inv_sqrt2_state * re + cr * partner_re - ci * partner_im;
+            let ai = inv_sqrt2_state * im + cr * partner_im + ci * partner_re;
+            let pivot_clear = eq_tile(
+                andi(
+                    basis,
+                    broadcast_scalar(bit_mask(pivot), const_shape![1, 4096]),
+                ),
+                zero_basis,
+            );
+            reduce_sum(select(pivot_clear, ar * ar + ai * ai, zero_state), 1i32)
+        };
+        minf(
+            maxf(
+                probability_true,
+                zero_probability,
+                nan::Enabled,
+                ftz::Disabled,
+            ),
+            one_probability,
+            nan::Enabled,
+            ftz::Disabled,
+        )
+    }
+
     fn flip_large<const OUTER: i32, const INNER: i32>(
         value: Tile<f32, { [1, 4096] }>,
     ) -> Tile<f32, { [1, 4096] }> {
@@ -1875,23 +1937,25 @@ mod kernels {
                     live1,
                 );
             } else {
-                let outcome = instruction_expression_rows(
-                    metadata,
-                    controls,
-                    expression_values,
-                    shots,
-                    shot,
-                    lanes1,
-                    live1,
-                    instruction,
-                    branches0,
-                    branches1,
-                    branches2,
-                    branches3,
-                );
-                let value: Tile<u64, { [] }> =
-                    reduce_sum(select(outcome, one_u64_1, zero_u64_1), 0i32);
-                store_u64(discarded, shot, value);
+                if load_u64(metadata, meta + 8i32) != 0u64 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        shots,
+                        shot,
+                        lanes1,
+                        live1,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    let value: Tile<u64, { [] }> =
+                        reduce_sum(select(outcome, one_u64_1, zero_u64_1), 0i32);
+                    store_u64(discarded, shot, value);
+                }
             }
         }
     }
@@ -2243,7 +2307,9 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+                if load_u64(metadata, meta + 8i32) != 0u64 {
+                    discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+                }
             }
         }
 
@@ -2257,7 +2323,9 @@ mod kernels {
                 branches2,
                 branches3,
             );
-            discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+            if load_u64(metadata, instruction * META_WORDS + 8i32) != 0u64 {
+                discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+            }
         }
 
         let logical = expression(
@@ -2292,11 +2360,13 @@ mod kernels {
         parameters: *mut f32,
         expression_values: *mut u64,
         expectations: *mut f32,
+        detectors: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
         detector_start: i32,
         random_stride: i32,
         shots: i32,
+        keep_records: i32,
         logical_word: i32,
         logical_block_mask: u64,
         logical_mask0: u64,
@@ -2655,13 +2725,26 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-                // A rejected one-shot tile cannot contribute a logical error,
-                // so its later quantum state is unobservable by this API.
-                let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
-                let discarded_count: u64 = tile_to_scalar(discarded_count);
-                if discarded_count != 0u64 {
-                    break;
+                if keep_records != 0i32 {
+                    store_u64_row(
+                        detectors,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
+                if load_u64(metadata, meta + 8i32) != 0u64 {
+                    discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+                    // A rejected one-shot tile cannot contribute a logical
+                    // error, so its later quantum state is unobservable.
+                    let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
+                    let discarded_count: u64 = tile_to_scalar(discarded_count);
+                    if discarded_count != 0u64 {
+                        break;
+                    }
                 }
             }
             instruction = instruction + 1i32;
@@ -2732,11 +2815,13 @@ mod kernels {
         parameters: *mut f32,
         expression_values: *mut u64,
         expectations: *mut f32,
+        detectors: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
         detector_start: i32,
         random_stride: i32,
         shots: i32,
+        keep_records: i32,
         logical_word: i32,
         logical_block_mask: u64,
         logical_mask0: u64,
@@ -3097,13 +3182,26 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-                // A rejected one-shot tile cannot contribute a logical error,
-                // so its later quantum state is unobservable by this API.
-                let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
-                let discarded_count: u64 = tile_to_scalar(discarded_count);
-                if discarded_count != 0u64 {
-                    break;
+                if keep_records != 0i32 {
+                    store_u64_row(
+                        detectors,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
+                if load_u64(metadata, meta + 8i32) != 0u64 {
+                    discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+                    // A rejected one-shot tile cannot contribute a logical
+                    // error, so its later quantum state is unobservable.
+                    let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
+                    let discarded_count: u64 = tile_to_scalar(discarded_count);
+                    if discarded_count != 0u64 {
+                        break;
+                    }
                 }
             }
             instruction = instruction + 1i32;
@@ -3170,13 +3268,17 @@ mod kernels {
         block_counts: *mut u64,
         metadata: *mut u64,
         controls: *mut i32,
+        expectation_indices: *mut i32,
         parameters: *mut f32,
         expression_values: *mut u64,
+        expectations: *mut f32,
+        detectors: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
         detector_start: i32,
         random_stride: i32,
         shots: i32,
+        keep_records: i32,
         logical_word: i32,
         logical_block_mask: u64,
         logical_mask0: u64,
@@ -3508,6 +3610,68 @@ mod kernels {
                 } else {
                     branches3 = ori(branches3, branch_value);
                 }
+            } else if opcode == 5u64 {
+                let sign = instruction_expression_rows(
+                    metadata,
+                    controls,
+                    expression_values,
+                    random_stride,
+                    shot_start,
+                    lanes,
+                    live,
+                    instruction,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                );
+                store_f32_row(
+                    expectations,
+                    load_i32(expectation_indices, instruction),
+                    shots,
+                    shot_start,
+                    lanes,
+                    live,
+                    select(sign, zero_probability - one_probability, one_probability),
+                );
+            } else if opcode == 6u64 {
+                let sign = instruction_expression_rows(
+                    metadata,
+                    controls,
+                    expression_values,
+                    random_stride,
+                    shot_start,
+                    lanes,
+                    live,
+                    instruction,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                );
+                let probability_true = measurement_probability_large(
+                    re,
+                    im,
+                    basis,
+                    parameters,
+                    params,
+                    load_u64(metadata, meta + 5i32),
+                    load_u64(metadata, meta + 6i32),
+                    load_u64(metadata, meta + 7i32),
+                    load_u64(metadata, meta + 8i32),
+                );
+                let expectation = select(sign, zero_probability - one_probability, one_probability)
+                    * (one_probability
+                        - broadcast_scalar(2.0f32, const_shape![1]) * probability_true);
+                store_f32_row(
+                    expectations,
+                    load_i32(expectation_indices, instruction),
+                    shots,
+                    shot_start,
+                    lanes,
+                    live,
+                    expectation,
+                );
             } else {
                 let outcome = instruction_expression_rows(
                     metadata,
@@ -3523,13 +3687,26 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-                // A rejected one-shot tile cannot contribute a logical error,
-                // so its later quantum state is unobservable by this API.
-                let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
-                let discarded_count: u64 = tile_to_scalar(discarded_count);
-                if discarded_count != 0u64 {
-                    break;
+                if keep_records != 0i32 {
+                    store_u64_row(
+                        detectors,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
+                if load_u64(metadata, meta + 8i32) != 0u64 {
+                    discarded = ori(discarded, select(outcome, one_shots, zero_shots));
+                    // A rejected one-shot tile cannot contribute a logical
+                    // error, so its later quantum state is unobservable.
+                    let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
+                    let discarded_count: u64 = tile_to_scalar(discarded_count);
+                    if discarded_count != 0u64 {
+                        break;
+                    }
                 }
             }
             instruction = instruction + 1i32;

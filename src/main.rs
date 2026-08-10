@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -40,6 +42,14 @@ struct Cli {
     /// Postselect every detector, in addition to source `DISCARD`s.
     #[arg(long)]
     postselect_detectors: bool,
+
+    /// Write per-shot detector and expectation rows using this path prefix.
+    #[arg(long)]
+    records_out: Option<PathBuf>,
+
+    /// Condition all ordinary Bernoulli sources on exactly this many faults.
+    #[arg(long, requires = "records_out", value_delimiter = ',')]
+    exact_k: Vec<usize>,
 }
 
 fn main() -> Result<()> {
@@ -66,10 +76,19 @@ fn run_cpu(args: &Cli) -> Result<()> {
         .compile(options)
         .context("failed to compile circuit")?;
     let info = *sampler.info();
-    let counts = sampler
-        .sample_counts_with_seed(args.shots, args.seed)
-        .context("sampling failed")?
-        .counts;
+    if !args.exact_k.is_empty() {
+        anyhow::bail!("--exact-k currently requires the GPU backend");
+    }
+    let result = if args.records_out.is_some() {
+        sampler.sample_with_seed(args.shots, args.seed, false)
+    } else {
+        sampler.sample_counts_with_seed(args.shots, args.seed)
+    }
+    .context("sampling failed")?;
+    if let Some(path) = &args.records_out {
+        write_records(path, &circuit, &result)?;
+    }
+    let counts = result.counts;
 
     println!("qubits {}", info.qubits);
     println!("records {}", info.measurement_records);
@@ -86,6 +105,36 @@ fn run_cpu(args: &Cli) -> Result<()> {
 
 #[cfg(feature = "gpu")]
 fn run_gpu(args: &Cli) -> Result<()> {
+    if let Some(path) = &args.records_out {
+        let circuit = Circuit::from_file(&args.circuit)
+            .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
+        let exact_ks: Vec<Option<usize>> = if args.exact_k.is_empty() {
+            vec![None]
+        } else {
+            args.exact_k.iter().copied().map(Some).collect()
+        };
+        for exact_k in exact_ks {
+            let result = ticit::gpu::sample_circuit_records(
+                &circuit,
+                args.shots,
+                args.seed,
+                args.chunk_shots,
+                0,
+                exact_k,
+            )?;
+            let output =
+                exact_k.map_or_else(|| path.clone(), |k| suffixed_path(path, &format!("_k{k}")));
+            write_records(&output, &circuit, &result)?;
+            println!("exact_k {}", exact_k.map_or(-1, |k| k as i64));
+            println!("shots {}", result.counts.shots);
+            println!("discarded {}", result.counts.discarded);
+            println!("accepted {}", result.counts.accepted);
+            println!("logical_errors {}", result.counts.logical_errors);
+            println!("compile_s {}", result.timing.compile_s);
+            println!("sample_s {}", result.timing.sample_s);
+        }
+        return Ok(());
+    }
     ticit::gpu::run(&ticit::gpu::GpuOptions {
         circuit: args.circuit.clone(),
         shots: args.shots,
@@ -93,6 +142,39 @@ fn run_gpu(args: &Cli) -> Result<()> {
         chunk_shots: args.chunk_shots,
         postselect_detectors: args.postselect_detectors,
     })
+}
+
+fn suffixed_path(path: &std::path::Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
+}
+
+fn write_records(
+    path: &std::path::Path,
+    circuit: &Circuit,
+    result: &ticit::SampleResult,
+) -> Result<()> {
+    std::fs::write(suffixed_path(path, ".detectors.u8"), &result.detectors)?;
+    let mut output = BufWriter::new(File::create(suffixed_path(path, ".exp_vals.f64"))?);
+    for values in result.exp_vals.chunks(8192) {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        output.write_all(&bytes)?;
+    }
+    output.flush()?;
+    std::fs::write(
+        suffixed_path(path, ".meta"),
+        format!(
+            "rows {}\ndetectors {}\nexpectations {}\nlayout row-major\nf64 little-endian\n",
+            result.record_rows,
+            circuit.detector_count(),
+            circuit.expectation_value_count(),
+        ),
+    )?;
+    Ok(())
 }
 
 #[cfg(not(feature = "gpu"))]
@@ -119,5 +201,16 @@ mod tests {
         let gpu = Cli::try_parse_from(["ticit", "circuit.ticit", "--backend", "gpu"])
             .expect("GPU CLI parses");
         assert_eq!(gpu.backend, Backend::Gpu);
+        assert!(Cli::try_parse_from(["ticit", "circuit.ticit", "--exact-k", "2"]).is_err());
+        let exact = Cli::try_parse_from([
+            "ticit",
+            "circuit.ticit",
+            "--records-out",
+            "rows",
+            "--exact-k",
+            "0,1,2",
+        ])
+        .expect("exact-k list parses");
+        assert_eq!(exact.exact_k, [0, 1, 2]);
     }
 }

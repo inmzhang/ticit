@@ -1,5 +1,9 @@
 # cuTile resident-kernel checks — 2026-08-09
 
+> Historical tuning record. Current corrected rates and retained launch
+> settings are in
+> [`2026-08-10-gpu-correctness-and-comparison.md`](2026-08-10-gpu-correctness-and-comparison.md).
+
 RTX 4090 through Slurm on `gpucluster`, ticit commits shown below, SymFT commit
 `bd77739`. Rates use the CLI's steady-state `sample_s`, which excludes cuTile
 JIT warmup.

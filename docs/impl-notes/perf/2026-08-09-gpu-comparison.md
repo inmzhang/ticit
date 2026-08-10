@@ -1,5 +1,10 @@
 # GPU throughput comparison — 2026-08-09
 
+> Historical result, superseded by
+> [`2026-08-10-gpu-correctness-and-comparison.md`](2026-08-10-gpu-correctness-and-comparison.md).
+> Its rates and launch settings predate the GPU correctness fixes and must not
+> be used as current benchmarks.
+
 ticit GPU commit `c6d0db1` was compared with SymFT commit `bd77739` on one RTX
 4090 and one H200 allocated through Slurm. The two wide-state rows were
 remeasured in paired runs after the generic bit-mask improvement at `bf46366`.
