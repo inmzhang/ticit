@@ -274,11 +274,10 @@ fn sample_circuit_impl(
     );
     let gpu_plan = plan::GpuPlan::build(&input.program, &input.logical_records)
         .context("failed to lower the GPU plan")?;
-    let instruction_count = if postselect_detectors {
-        gpu_plan.instructions.len()
-    } else {
-        gpu_plan.detector_start
-    };
+    // Detector postselection is carried by each `OP_DETECTOR`'s own postselect
+    // bit, which planning derives from `postselection_mask`, so every kernel
+    // runs the whole instruction stream.
+    let instruction_count = gpu_plan.instructions.len();
     let sample_tile_shots = if !keep_records
         && input.program.max_k <= 4
         && input.program.nexpvals == 0
@@ -740,7 +739,6 @@ fn sample_circuit_impl(
                     expression_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
-                    gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
                     1u64 << (gpu_plan.logical.block & 63),
@@ -765,7 +763,6 @@ fn sample_circuit_impl(
                     detector_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
-                    gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
                     keep_records as i32,
@@ -793,7 +790,6 @@ fn sample_circuit_impl(
                     detector_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
-                    gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
                     keep_records as i32,
@@ -820,7 +816,6 @@ fn sample_circuit_impl(
                     detector_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
-                    gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
                     keep_records as i32,

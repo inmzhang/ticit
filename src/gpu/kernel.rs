@@ -2015,7 +2015,6 @@ mod kernels {
         expression_values: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
-        detector_start: i32,
         random_stride: i32,
         shots: i32,
         logical_block_mask: u64,
@@ -2063,7 +2062,7 @@ mod kernels {
         let mut branches3 = zero_shots;
         let mut discarded = zero_shots;
 
-        for instruction in 0i32..detector_start {
+        for instruction in 0i32..instruction_count {
             let meta = instruction * META_WORDS;
             let params = instruction * PARAM_WORDS;
             let control = instruction * CONTROL_WORDS;
@@ -2313,21 +2312,6 @@ mod kernels {
             }
         }
 
-        for instruction in detector_start..instruction_count {
-            let outcome = instruction_expression(
-                metadata,
-                exogenous_values,
-                instruction,
-                branches0,
-                branches1,
-                branches2,
-                branches3,
-            );
-            if load_u64(metadata, instruction * META_WORDS + 8i32) != 0u64 {
-                discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-            }
-        }
-
         let logical = expression(
             exogenous_values,
             logical_block_mask,
@@ -2363,7 +2347,6 @@ mod kernels {
         detectors: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
-        detector_start: i32,
         random_stride: i32,
         shots: i32,
         keep_records: i32,
@@ -2405,7 +2388,7 @@ mod kernels {
         let mut discarded = zero_shots;
 
         let mut instruction = 0i32;
-        while instruction < detector_start {
+        while instruction < instruction_count {
             let meta = instruction * META_WORDS;
             let params = instruction * PARAM_WORDS;
             let control = instruction * CONTROL_WORDS;
@@ -2750,31 +2733,6 @@ mod kernels {
             instruction = instruction + 1i32;
         }
 
-        let mut instruction = detector_start;
-        while instruction < instruction_count {
-            let outcome = instruction_expression_rows(
-                metadata,
-                controls,
-                expression_values,
-                random_stride,
-                shot_start,
-                lanes,
-                live,
-                instruction,
-                branches0,
-                branches1,
-                branches2,
-                branches3,
-            );
-            discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-            let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
-            let discarded_count: u64 = tile_to_scalar(discarded_count);
-            if discarded_count != 0u64 {
-                break;
-            }
-            instruction = instruction + 1i32;
-        }
-
         let logical_values = load_u64_row(
             expression_values,
             logical_word,
@@ -2818,7 +2776,6 @@ mod kernels {
         detectors: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
-        detector_start: i32,
         random_stride: i32,
         shots: i32,
         keep_records: i32,
@@ -2860,7 +2817,7 @@ mod kernels {
         let mut discarded = zero_shots;
 
         let mut instruction = 0i32;
-        while instruction < detector_start {
+        while instruction < instruction_count {
             let meta = instruction * META_WORDS;
             let params = instruction * PARAM_WORDS;
             let control = instruction * CONTROL_WORDS;
@@ -3207,31 +3164,6 @@ mod kernels {
             instruction = instruction + 1i32;
         }
 
-        let mut instruction = detector_start;
-        while instruction < instruction_count {
-            let outcome = instruction_expression_rows(
-                metadata,
-                controls,
-                expression_values,
-                random_stride,
-                shot_start,
-                lanes,
-                live,
-                instruction,
-                branches0,
-                branches1,
-                branches2,
-                branches3,
-            );
-            discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-            let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
-            let discarded_count: u64 = tile_to_scalar(discarded_count);
-            if discarded_count != 0u64 {
-                break;
-            }
-            instruction = instruction + 1i32;
-        }
-
         let logical_values = load_u64_row(
             expression_values,
             logical_word,
@@ -3275,7 +3207,6 @@ mod kernels {
         detectors: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
-        detector_start: i32,
         random_stride: i32,
         shots: i32,
         keep_records: i32,
@@ -3317,7 +3248,7 @@ mod kernels {
         let mut discarded = zero_shots;
 
         let mut instruction = 0i32;
-        while instruction < detector_start {
+        while instruction < instruction_count {
             let meta = instruction * META_WORDS;
             let params = instruction * PARAM_WORDS;
             let control = instruction * CONTROL_WORDS;
@@ -3708,31 +3639,6 @@ mod kernels {
                         break;
                     }
                 }
-            }
-            instruction = instruction + 1i32;
-        }
-
-        let mut instruction = detector_start;
-        while instruction < instruction_count {
-            let outcome = instruction_expression_rows(
-                metadata,
-                controls,
-                expression_values,
-                random_stride,
-                shot_start,
-                lanes,
-                live,
-                instruction,
-                branches0,
-                branches1,
-                branches2,
-                branches3,
-            );
-            discarded = ori(discarded, select(outcome, one_shots, zero_shots));
-            let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded, 0i32);
-            let discarded_count: u64 = tile_to_scalar(discarded_count);
-            if discarded_count != 0u64 {
-                break;
             }
             instruction = instruction + 1i32;
         }

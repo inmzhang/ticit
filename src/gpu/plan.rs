@@ -49,7 +49,6 @@ pub struct GpuInstruction {
 #[derive(Clone, Debug)]
 pub struct GpuPlan {
     pub instructions: Vec<GpuInstruction>,
-    pub detector_start: usize,
     pub logical: GpuExpression,
     pub expression_plan: PresampledExpressionPlan,
     pub exogenous_plan: GpuExogenousPlan,
@@ -483,7 +482,6 @@ impl GpuPlan {
                 &branch_slots,
             )?;
         }
-        let detector_start = instructions.len();
         let logical = compile_expression(
             expression_plan
                 .instruction_expressions
@@ -496,7 +494,6 @@ impl GpuPlan {
 
         Ok(Self {
             instructions,
-            detector_start,
             logical,
             expression_plan,
             exogenous_plan,
@@ -1200,7 +1197,6 @@ mod tests {
         let plan = GpuPlan::build(&program, &[vec![1]]).expect("GPU plan");
         assert_eq!(plan.branch_count, 1);
         assert_eq!(plan.instructions.len(), 2);
-        assert_eq!(plan.detector_start, 2);
         assert_eq!(plan.instructions[1].opcode, OP_DETECTOR);
         assert!(plan.instructions[1].diagonal_phase);
         assert_eq!(plan.instructions[1].detector, Some(0));
