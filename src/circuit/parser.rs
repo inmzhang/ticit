@@ -656,9 +656,8 @@ fn ticit_mpp_pauli(nqubits: usize, target: &str, line: usize) -> Result<(PauliSt
             None => factor,
         };
         let invalid = || err_at(line, "invalid MPP factor");
-        let axis = match factor.as_bytes().first() {
-            Some(&byte @ (b'X' | b'Y' | b'Z')) => byte,
-            _ => return Err(invalid()),
+        let Some(&axis @ (b'X' | b'Y' | b'Z')) = factor.as_bytes().first() else {
+            return Err(invalid());
         };
         let qubit = parse_index(&factor[1..]).ok_or_else(invalid)?;
         out = out * pauli_on_target(nqubits, axis, qubit);

@@ -56,18 +56,13 @@ pub(crate) enum Width {
 }
 
 impl Width {
-    /// The class holding a register of `words` words.
-    ///
-    /// This rounding must match `frame::words_for`, which the frame keeps its
-    /// own copy of (it is compiled standalone by `tests/frame_differential.rs`
-    /// and so cannot see this module). `TableauSimulator` takes its width from the
-    /// frame and `width_class_tracks_the_register` pins the two together.
+    /// The class holding the frame's already-padded row width.
     pub(crate) fn for_words(words: usize) -> Self {
         match words {
-            0 | 1 => Width::W1,
+            1 => Width::W1,
             2 => Width::W2,
-            3 | 4 => Width::W4,
-            5..=8 => Width::W8,
+            4 => Width::W4,
+            8 => Width::W8,
             _ => Width::Wide,
         }
     }
@@ -361,13 +356,11 @@ mod tests {
     }
 
     #[test]
-    fn width_classes_round_up() {
+    fn frame_widths_select_label_storage() {
         for (words, want) in [
             (1usize, Width::W1),
             (2, Width::W2),
-            (3, Width::W4),
             (4, Width::W4),
-            (5, Width::W8),
             (8, Width::W8),
             (9, Width::Wide),
         ] {

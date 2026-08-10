@@ -16,7 +16,9 @@ use std::fmt;
 use std::ops::Not;
 
 use crate::bits::bit_word_count;
-use crate::bits::{check_probability, normalize_conditions, symbol_bit_mask, symbol_word_index};
+use crate::bits::{
+    check_probability, normalize_xor_conditions, symbol_bit_mask, symbol_word_index,
+};
 use crate::errors::{Result, TicitError};
 
 /// `constant XOR s_{c_1} XOR ... XOR s_{c_n}`.
@@ -32,10 +34,11 @@ impl SymbolicBool {
     ///
     /// Panics on a non-positive condition id: ids are minted by
     /// [`SymbolicContext`], so a zero or negative one is a programming bug.
-    pub fn new(constant: bool, conditions: Vec<i32>) -> Self {
+    pub fn new(constant: bool, mut conditions: Vec<i32>) -> Self {
+        normalize_xor_conditions(&mut conditions);
         Self {
             constant,
-            conditions: normalize_conditions(&conditions),
+            conditions,
         }
     }
 

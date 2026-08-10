@@ -480,11 +480,10 @@ fn compact_surviving_shots(
             .iter()
             .enumerate()
             .filter(|&(_, &last_use)| last_use > instruction_index)
-            .map(|(expression, _)| expression * stride_words)
-            .collect::<Vec<_>>();
+            .map(|(expression, _)| expression * stride_words);
         compact_bit_columns(
             expression_words,
-            bases.into_iter(),
+            bases,
             stride_words,
             old_shots,
             survivor_count,
@@ -529,11 +528,10 @@ fn compact_surviving_shots(
                 last_use > instruction_index
             }
         })
-        .map(|record| (record - 1) * stride_words)
-        .collect::<Vec<_>>();
+        .map(|record| (record - 1) * stride_words);
     compact_bit_columns(
         &mut runtime.measurement_words,
-        record_bases.into_iter(),
+        record_bases,
         stride_words,
         old_shots,
         survivor_count,

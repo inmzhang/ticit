@@ -5,34 +5,17 @@
 //! a global phase" is not good enough. Every test here runs the same operation
 //! on both representations and compares all `2n` preimages, bits and phases.
 //!
-//! `Frame` is private to `ticit::tableau_simulator`, so this file compiles the
-//! module directly instead of widening the crate's public API. That works
-//! because `frame.rs` names no type from the rest of `bloc_utils` — its Pauli
-//! operands arrive as `PauliWords`, a borrowed pair of word masks — and its
-//! `paulimer` interop sits behind `cfg(test)`, which an integration-test target
-//! enables. Keep it that way: `paulimer` is a dev-dependency now, so anything
-//! of it that leaked into the library would stop the crate building at all.
+//! `paulimer` remains a dev-dependency: this child module can reach the private
+//! frame directly without widening the library API.
 
-#[path = "../src/tableau_simulator/frame.rs"]
-#[allow(dead_code)]
-mod frame;
-
+use super::{Frame, RowPauli};
+use crate::{Pauli as BlocPauli, PauliString};
 use binar::Bitwise;
-use frame::{Frame, PauliWords, RowPauli};
 use paulimer::{
     Clifford, CliffordMutable, CliffordUnitary, DensePauli, Pauli, PauliObservable,
     PositionedPauliObservable, SparsePauli, commutes_with,
 };
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
-use ticit::{Pauli as BlocPauli, PauliString};
-
-/// The frame's view of a `PauliString`, as `ticit::tableau_simulator` builds it.
-fn pauli_words(pauli: &PauliString) -> PauliWords<'_> {
-    PauliWords {
-        x: pauli.x_words(),
-        z: pauli.z_words(),
-    }
-}
 
 /// The `SparsePauli` a `PauliString` names, for feeding the oracle.
 fn sparse(pauli: &PauliString) -> SparsePauli {
@@ -165,7 +148,7 @@ fn random_pauli(rng: &mut SmallRng, n: usize, max_weight: usize) -> SparsePauli 
 ///
 /// Where the operand's sign changes the answer — a controlled Pauli's does,
 /// since it decides which eigenstate triggers the target — both sides have to
-/// be fed the same thing, and `PauliWords` has no sign to feed. So the pair is
+/// be fed the same thing, and the frame ignores signs. So the pair is
 /// generated here and crossed to `paulimer` with [`sparse`].
 fn random_pauli_string(rng: &mut SmallRng, n: usize, max_weight: usize) -> PauliString {
     let weight = rng.random_range(1..=max_weight.min(n));
@@ -282,7 +265,7 @@ fn apply_random_op(
         }
         10 => {
             let pauli = random_pauli(rng, n, 4);
-            frame.left_pauli(pauli_words(&unsigned(&pauli, n)));
+            frame.left_pauli(&unsigned(&pauli, n));
             clifford.left_mul_pauli(&pauli);
             format!("pauli({pauli:#})")
         }
@@ -306,7 +289,7 @@ fn apply_random_op(
         }
         14 => {
             let (control, target) = random_commuting_pair(rng, n, 3);
-            frame.left_controlled_pauli(pauli_words(&control), pauli_words(&target));
+            frame.left_controlled_pauli(&control, &target);
             clifford.left_mul_controlled_pauli(&sparse(&control), &sparse(&target));
             format!("controlled_pauli({control}, {target})")
         }
@@ -409,10 +392,10 @@ fn preimage_into_matches_paulimer() {
         let mut x_mask = vec![0u64; words];
         let mut z_mask = vec![0u64; words];
         for trial in 0..20 {
-            // Unsigned on both sides: `PauliWords` carries no sign, so the
+            // Unsigned on both sides: the frame ignores sign, so the
             // phase compared here is exactly the `i^{#Y}` the frame derives.
             let pauli = random_pauli_string(&mut rng, n, 5.min(n));
-            let phase = frame.preimage_into(pauli_words(&pauli), &mut x_mask, &mut z_mask);
+            let phase = frame.preimage_into(&pauli, &mut x_mask, &mut z_mask);
             let want = clifford.preimage(&sparse(&pauli));
             let context = format!("n={n} trial={trial} pauli={pauli:#}");
             assert_eq!(phase, want.xz_phase_exponent(), "{context}: phase");

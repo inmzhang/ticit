@@ -93,25 +93,12 @@ pub(crate) fn check_probability(probability: f64) -> Result<f64> {
     Ok(probability)
 }
 
-/// XORs one condition into a sorted, duplicate-free condition list: present
-/// means remove, absent means insert.
-pub(crate) fn toggle_condition(conditions: &mut Vec<i32>, condition: i32) {
-    assert!(condition > 0, "condition id must be positive");
-    match conditions.binary_search(&condition) {
-        Ok(index) => {
-            conditions.remove(index);
-        }
-        Err(index) => conditions.insert(index, condition),
-    }
-}
-
-/// [`normalize_conditions`] in place, by sorting rather than by repeated
-/// insertion.
-///
-/// The planner's symbol substitution concatenates whole condition lists and then
-/// re-canonicalizes, so it needs the sort-based form: the insertion-based one is
-/// quadratic on long unsorted inputs.
+/// Canonicalizes a condition list in place by sorting and cancelling pairs.
 pub(crate) fn normalize_xor_conditions(conditions: &mut Vec<i32>) {
+    assert!(
+        conditions.iter().all(|&condition| condition > 0),
+        "condition id must be positive"
+    );
     conditions.sort_unstable();
     let mut write = 0;
     let mut read = 0;
@@ -127,16 +114,6 @@ pub(crate) fn normalize_xor_conditions(conditions: &mut Vec<i32>) {
         read = end;
     }
     conditions.truncate(write);
-}
-
-/// Canonicalizes a condition list to strictly ascending order with
-/// even-multiplicity entries cancelled (`s ^ s == 0`).
-pub(crate) fn normalize_conditions(conditions: &[i32]) -> Vec<i32> {
-    let mut out = Vec::with_capacity(conditions.len());
-    for &condition in conditions {
-        toggle_condition(&mut out, condition);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -160,13 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_sorts_and_cancels_pairs() {
-        assert_eq!(normalize_conditions(&[3, 1, 3, 2, 1, 1]), vec![1, 2]);
-        assert!(normalize_conditions(&[7, 7]).is_empty());
-    }
-
-    #[test]
-    fn in_place_normalization_agrees_with_the_insertion_form() {
+    fn normalization_sorts_and_cancels_pairs() {
         let mut conditions = vec![3, 1, 3, 2, 1, 1];
         normalize_xor_conditions(&mut conditions);
         assert_eq!(conditions, vec![1, 2]);

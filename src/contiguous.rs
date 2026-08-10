@@ -230,7 +230,7 @@ pub fn rotate_uniform_imag_pairs_soa(
         && dim <= im.len()
         && xmask != 0
         && pair_bit < usize::BITS - 1
-        && pair_bit == 63 - xmask.leading_zeros()
+        && pair_bit == xmask.ilog2()
         && let Some(level) = simd_level()
     {
         if dim >= 8

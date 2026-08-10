@@ -1,6 +1,6 @@
 //! Rank-behavior tests (design spec §4, item 4).
 
-use ticit::{Pauli, PauliString, SimError, TableauSimulator};
+use crate::{Pauli, PauliString, SimError, TableauSimulator};
 
 #[test]
 fn diagonal_t_does_not_grow_rank() {

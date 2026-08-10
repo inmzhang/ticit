@@ -61,27 +61,18 @@ mod batch;
 mod error;
 mod frame;
 mod label;
+#[cfg(test)]
+mod measurement_tests;
+#[cfg(test)]
+mod rank_tests;
 
 pub use batch::{BatchOutcome, Gate1Q, Instruction};
 pub use error::SimError;
 
 #[cfg(target_arch = "x86_64")]
 use frame::has_popcnt;
-use frame::{Axis, Frame, PauliWords, RowPauli};
+use frame::{Axis, Frame, RowPauli};
 use label::{Key, Label, LabelKey, Width};
-
-/// The frame's view of a [`PauliString`] — its x/z words, borrowed.
-///
-/// One conversion site rather than a `From` impl on either side: `frame.rs` is
-/// compiled standalone by `tests/frame_differential.rs` and so cannot name
-/// `PauliString`, and `PauliString` has no business knowing about the frame.
-#[inline]
-fn words(pauli: &PauliString) -> PauliWords<'_> {
-    PauliWords {
-        x: pauli.x_words(),
-        z: pauli.z_words(),
-    }
-}
 
 /// Tolerance for "numerically deterministic" / "impossible to post-select"
 /// decisions and internal reality checks.
@@ -741,7 +732,7 @@ impl TableauSimulator {
     /// Apply a Pauli `P` to the state (`R → P·R`).
     pub fn pauli(&mut self, p: &PauliString) {
         self.ensure_for(p);
-        self.core.r.left_pauli(words(p));
+        self.core.r.left_pauli(p);
     }
 
     /// Apply `control`-conditioned `target` (both Paulis).
@@ -766,9 +757,7 @@ impl TableauSimulator {
         }
         self.ensure_for(control);
         self.ensure_for(target);
-        self.core
-            .r
-            .left_controlled_pauli(words(control), words(target));
+        self.core.r.left_controlled_pauli(control, target);
         Ok(())
     }
 
@@ -1284,9 +1273,7 @@ impl Core {
         let negated = measurement_phase_sign(p).map_err(|_| SimError::NonHermitianPauli)?;
         let mut a = K::zeros(self.words);
         let mut b = K::zeros(self.words);
-        let phase = (self
-            .r
-            .preimage_into(words(p), a.as_mut_slice(), b.as_mut_slice())
+        let phase = (self.r.preimage_into(p, a.as_mut_slice(), b.as_mut_slice())
             + 2 * u8::from(negated))
             & 3;
         Ok(Decomp {
@@ -1322,13 +1309,7 @@ impl Core {
     /// outcome; the RNG draw matches `SOFT`'s `rand() >= p0 ? 1 : 0` (`>=` keeps
     /// `p0 = 0` deterministic — a `+1` of probability zero never samples).
     fn choose(&mut self, forced: Option<bool>, p0: f64) -> bool {
-        match forced {
-            Some(o) => o,
-            None => {
-                let r = rand_float(&mut self.rng);
-                r >= p0
-            }
-        }
+        forced.unwrap_or_else(|| rand_float(&mut self.rng) >= p0)
     }
 
     /// Reject a projected label count that exceeds the cap. Always called
@@ -2441,12 +2422,8 @@ mod tests {
         assert_eq!(sim.amps, amps_before);
     }
 
-    /// The label width and the frame's row width come from two separate
-    /// rounding rules — `Width::for_words` in `label.rs` and `words_for` in
-    /// `frame.rs`, which cannot share code because the frame is compiled
-    /// standalone by `tests/frame_differential.rs`. They must agree, or the
-    /// masks the decomposition writes are the wrong length and `preimage_into`
-    /// asserts. This pins both, at every class boundary.
+    /// The label width must track the frame's padded row width at every class
+    /// boundary, or decomposition masks have the wrong length.
     #[test]
     fn width_class_tracks_the_register() {
         for (n, want) in [

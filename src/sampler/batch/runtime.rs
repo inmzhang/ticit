@@ -636,7 +636,7 @@ pub(crate) fn execute_shot_major_rotation_run(
                 || !kernel.uniform_imag_pairs
                 || xmask == 0
                 || xmask > 15
-                || kernel.pair_bit != 63 - xmask.leading_zeros()
+                || kernel.pair_bit != xmask.ilog2()
             {
                 qualified = false;
                 break;
@@ -855,7 +855,7 @@ fn execute_shot_major_promotion_rotation_run(
             || !kernel.uniform_imag_pairs
             || xmask == 0
             || xmask > 15
-            || kernel.pair_bit != 63 - xmask.leading_zeros()
+            || kernel.pair_bit != xmask.ilog2()
         {
             return Ok(0);
         }
@@ -986,7 +986,7 @@ fn promote_rotate_register_run_shot(
             im,
             dim,
             step.xmask,
-            63 - step.xmask.leading_zeros(),
+            step.xmask.ilog2(),
             step.cos,
             q,
         );

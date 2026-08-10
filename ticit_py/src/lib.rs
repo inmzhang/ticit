@@ -108,7 +108,7 @@ impl PyCircuit {
         gpu_chunk_shots: usize,
     ) -> PyResult<PyProgram> {
         compile_circuit(
-            self.0.clone(),
+            &self.0,
             postselection_mask.unwrap_or_default(),
             backend,
             observable,
@@ -571,7 +571,7 @@ fn compile(
     }
     let circuit = ticit::Circuit::from_text(stim_text).map_err(ticit_error)?;
     compile_circuit(
-        circuit,
+        &circuit,
         postselection_mask.unwrap_or_default(),
         backend,
         observable,
@@ -584,7 +584,7 @@ fn compile(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_circuit(
-    circuit: ticit::Circuit,
+    circuit: &ticit::Circuit,
     mask: Vec<u8>,
     backend: &str,
     observable: usize,
@@ -642,7 +642,7 @@ fn compile_circuit(
                     .ok_or_else(|| PyValueError::new_err("gpu_chunk_shots must be positive"))?;
                 (
                     Backend::Gpu {
-                        circuit: Box::new(circuit),
+                        circuit: Box::new(circuit.clone()),
                         chunk_shots,
                         postselect_detectors,
                     },

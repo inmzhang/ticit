@@ -16,9 +16,9 @@
 
 use std::f64::consts::FRAC_1_SQRT_2;
 
+use crate::{Pauli, PauliString, SimError, TableauSimulator};
 use num_complex::Complex64;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
-use ticit::{Pauli, PauliString, SimError, TableauSimulator};
 
 // ==============================================================================
 // Dense reference

@@ -26,6 +26,14 @@ fn sim_error(error: ticit::SimError) -> PyErr {
     }
 }
 
+fn check_qubit(q: usize, nqubits: usize) -> PyResult<()> {
+    if q < nqubits {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err("qubit index is out of range"))
+    }
+}
+
 /// A packed Pauli operator with a phase exponent of `i`.
 ///
 /// String position is the qubit index. Use `pauli_string("IXYZ")` to parse a
@@ -93,34 +101,26 @@ impl PyPauliString {
 
     /// Returns whether qubit `q` has an X component.
     fn xbit(&self, q: usize) -> PyResult<bool> {
-        if q >= self.0.nqubits {
-            return Err(PyValueError::new_err("qubit index is out of range"));
-        }
+        check_qubit(q, self.0.nqubits)?;
         Ok(self.0.xbit(q))
     }
 
     /// Returns whether qubit `q` has a Z component.
     fn zbit(&self, q: usize) -> PyResult<bool> {
-        if q >= self.0.nqubits {
-            return Err(PyValueError::new_err("qubit index is out of range"));
-        }
+        check_qubit(q, self.0.nqubits)?;
         Ok(self.0.zbit(q))
     }
 
     /// Sets or clears the X component on qubit `q`.
     fn set_xbit(&mut self, q: usize, value: bool) -> PyResult<()> {
-        if q >= self.0.nqubits {
-            return Err(PyValueError::new_err("qubit index is out of range"));
-        }
+        check_qubit(q, self.0.nqubits)?;
         self.0.set_xbit(q, value);
         Ok(())
     }
 
     /// Sets or clears the Z component on qubit `q`.
     fn set_zbit(&mut self, q: usize, value: bool) -> PyResult<()> {
-        if q >= self.0.nqubits {
-            return Err(PyValueError::new_err("qubit index is out of range"));
-        }
+        check_qubit(q, self.0.nqubits)?;
         self.0.set_zbit(q, value);
         Ok(())
     }
@@ -177,9 +177,7 @@ fn pauli_identity(nqubits: usize) -> PyPauliString {
 #[gen_stub_pyfunction(module = "ticit._core")]
 #[pyfunction]
 fn pauli_x(nqubits: usize, q: usize) -> PyResult<PyPauliString> {
-    if q >= nqubits {
-        return Err(PyValueError::new_err("qubit index is out of range"));
-    }
+    check_qubit(q, nqubits)?;
     Ok(PyPauliString(ticit::pauli_x(nqubits, q)))
 }
 
@@ -187,9 +185,7 @@ fn pauli_x(nqubits: usize, q: usize) -> PyResult<PyPauliString> {
 #[gen_stub_pyfunction(module = "ticit._core")]
 #[pyfunction]
 fn pauli_y(nqubits: usize, q: usize) -> PyResult<PyPauliString> {
-    if q >= nqubits {
-        return Err(PyValueError::new_err("qubit index is out of range"));
-    }
+    check_qubit(q, nqubits)?;
     Ok(PyPauliString(ticit::pauli_y(nqubits, q)))
 }
 
@@ -197,9 +193,7 @@ fn pauli_y(nqubits: usize, q: usize) -> PyResult<PyPauliString> {
 #[gen_stub_pyfunction(module = "ticit._core")]
 #[pyfunction]
 fn pauli_z(nqubits: usize, q: usize) -> PyResult<PyPauliString> {
-    if q >= nqubits {
-        return Err(PyValueError::new_err("qubit index is out of range"));
-    }
+    check_qubit(q, nqubits)?;
     Ok(PyPauliString(ticit::pauli_z(nqubits, q)))
 }
 

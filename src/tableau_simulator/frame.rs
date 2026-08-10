@@ -71,10 +71,12 @@
 //! touches are the same ones: `R†X_jR` anticommutes with `R†PR` exactly when
 //! `X_j` anticommutes with `P`. That makes
 //! `frame.right_pauli_exp(R.preimage(P))` and `R.left_mul_pauli_exp(P)` the
-//! same tableau, which is what `tests/frame_differential.rs` checks.
+//! same tableau, which the differential unit tests check.
 //!
 //! For `V = Z_p` the same argument degenerates to a sign: `Z_p·ρ·Z_p = −ρ`
 //! exactly when `ρ` has an x-bit at `p`.
+
+use crate::PauliString;
 
 #[cfg(test)]
 use binar::{Bitwise, vec::AlignedBitVec};
@@ -83,6 +85,9 @@ use paulimer::{
     Clifford, CliffordUnitary, DensePauli, Pauli, PauliBinaryOps,
     clifford::{MutablePreImages, PreimageViews},
 };
+
+#[cfg(test)]
+mod differential_tests;
 
 /// `u64` words a register of `n` qubits actually occupies.
 #[inline]
@@ -94,12 +99,11 @@ fn logical_words(n: usize) -> usize {
 /// kernels are specialized for. See the [module docs](self).
 #[inline]
 fn words_for(n: usize) -> usize {
-    match logical_words(n) {
-        1 => 1,
-        2 => 2,
-        3 | 4 => 4,
-        5..=8 => 8,
-        wide => wide,
+    let words = logical_words(n);
+    if words <= 8 {
+        words.next_power_of_two()
+    } else {
+        words
     }
 }
 
@@ -155,9 +159,8 @@ macro_rules! by_width {
 /// `is_x86_feature_detected!` caches its CPUID answer in a static, so this is
 /// a load and a test, and the branch is perfectly predicted.
 ///
-/// This lives in `frame.rs` because `tests/frame_differential.rs` compiles
-/// this file on its own and so it may not import from a sibling module;
-/// `mod.rs` borrows it from here rather than keeping a second copy.
+/// Kept beside the parity kernels so every caller shares one cached feature
+/// check.
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn has_popcnt() -> bool {
@@ -284,46 +287,17 @@ fn set_bits(mask: &[u64]) -> impl Iterator<Item = usize> + '_ {
     })
 }
 
-/// A phaseless Pauli as x/z word masks — the frame's whole Pauli vocabulary.
-///
-/// The masks are the caller's (`ticit::PauliString`'s, in practice) and
-/// are read as *Hermitian* per-site Paulis: a site with both bits set is
-/// `Y = iXZ`. Borrowed rather than owned, and word-shaped rather than named,
-/// because this file is compiled standalone by `tests/frame_differential.rs`
-/// and so names no type from the rest of the crate.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PauliWords<'a> {
-    /// X part, least-significant qubit first. Bits past the register are clear.
-    pub(crate) x: &'a [u64],
-    /// Z part, same shape.
-    pub(crate) z: &'a [u64],
-}
-
-impl PauliWords<'_> {
-    /// The phase exponent of this Pauli in the `X`-then-`Z` normal form.
-    ///
-    /// The masks carry no phase of their own, but their sites are Hermitian and
-    /// `Y = i·X·Z`. Distinct sites commute, so pulling every `X` factor left of
-    /// every `Z` factor costs nothing beyond those per-site `i`s:
-    ///
-    /// ```text
-    /// P = ∏_q P_q = i^{#Y} · X^a · Z^b,   #Y = |{q : a_q ∧ b_q}|.
-    /// ```
-    ///
-    /// That `i^{#Y}` is exactly what `paulimer`'s `xz_phase_exponent` used to
-    /// hand over, and it is what keeps `Q = R†PR` on the frame's phase
-    /// convention. It also re-derives Hermiticity for free: `⟨a, b⟩ ≡ #Y mod 2`,
-    /// so `P† = (−i)^{#Y}·(−1)^{⟨a,b⟩}·X^a Z^b = P`.
-    #[inline]
-    fn xz_phase_exponent(self) -> u8 {
-        let y_sites: u32 = self
-            .x
-            .iter()
-            .zip(self.z)
-            .map(|(&x_word, &z_word)| (x_word & z_word).count_ones())
-            .sum();
-        (y_sites & 3) as u8
-    }
+/// The `X`-then-`Z` phase contributed by the string's Hermitian `Y = iXZ`
+/// sites. The string's global phase is irrelevant to frame conjugation.
+#[inline]
+fn xz_phase_exponent(pauli: &PauliString) -> u8 {
+    let y_sites: u32 = pauli
+        .x_words()
+        .iter()
+        .zip(pauli.z_words())
+        .map(|(&x, &z)| (x & z).count_ones())
+        .sum();
+    (y_sites & 3) as u8
 }
 
 /// A single-qubit Pauli axis, for the basis-preimage fast path.
@@ -353,7 +327,6 @@ pub(crate) struct RowPauli {
 #[cfg(test)]
 impl RowPauli {
     /// The equivalent `paulimer` Pauli, for the differential tests.
-    #[allow(dead_code)] // used by `to_clifford_unitary` and the test file
     pub(crate) fn to_dense(&self) -> DensePauli {
         DensePauli::from_bits(
             AlignedBitVec::from_words(&self.x),
@@ -701,12 +674,12 @@ impl Frame {
     /// Conjugation is blind to `P`'s global phase, so — like
     /// `left_mul_pauli` (`clifford_impl.rs:771`) — the operand's phase
     /// exponent is ignored and only sign flips remain.
-    pub(crate) fn left_pauli(&mut self, pauli: PauliWords<'_>) {
+    pub(crate) fn left_pauli(&mut self, pauli: &PauliString) {
         let phases = &mut self.phases;
-        for qubit in set_bits(pauli.x) {
+        for qubit in set_bits(pauli.x_words()) {
             phases[pz(qubit)] ^= 2;
         }
-        for qubit in set_bits(pauli.z) {
+        for qubit in set_bits(pauli.z_words()) {
             phases[px(qubit)] ^= 2;
         }
     }
@@ -718,18 +691,14 @@ impl Frame {
     /// right-multiplications by the target preimage all happen before the
     /// left-multiplications by the control preimage — the order matters when
     /// the two supports overlap.
-    pub(crate) fn left_controlled_pauli(
-        &mut self,
-        control: PauliWords<'_>,
-        target: PauliWords<'_>,
-    ) {
+    pub(crate) fn left_controlled_pauli(&mut self, control: &PauliString, target: &PauliString) {
         by_width!(self.words, W => self.left_controlled_pauli_w::<W>(control, target));
     }
 
     fn left_controlled_pauli_w<const W: usize>(
         &mut self,
-        control: PauliWords<'_>,
-        target: PauliWords<'_>,
+        control: &PauliString,
+        target: &PauliString,
     ) {
         let stride = self.stride_w::<W>();
         // Moving the buffers out of `self` (a pointer swap, not an allocation)
@@ -746,16 +715,16 @@ impl Frame {
         let (target_row, rest) = scratch.split_at(stride);
         let control_row = &rest[..stride];
 
-        for qubit in set_bits(control.x) {
+        for qubit in set_bits(control.x_words()) {
             self.mul_row_right_by::<W>(pz(qubit), target_row, phases[0]);
         }
-        for qubit in set_bits(control.z) {
+        for qubit in set_bits(control.z_words()) {
             self.mul_row_right_by::<W>(px(qubit), target_row, phases[0]);
         }
-        for qubit in set_bits(target.x) {
+        for qubit in set_bits(target.x_words()) {
             self.mul_row_left_by::<W>(pz(qubit), control_row, phases[1]);
         }
-        for qubit in set_bits(target.z) {
+        for qubit in set_bits(target.z_words()) {
             self.mul_row_left_by::<W>(px(qubit), control_row, phases[1]);
         }
 
@@ -931,7 +900,7 @@ impl Frame {
     /// dense Pauli it would have to scan bit by bit.
     ///
     /// The operand's contribution to `k` is
-    /// [`PauliWords::xz_phase_exponent`] — one `i` per `Y` site, since the
+    /// [`xz_phase_exponent`] — one `i` per `Y` site, since the
     /// masks name Hermitian Paulis and carry no phase of their own.
     ///
     /// # Panics
@@ -940,7 +909,7 @@ impl Frame {
     /// if `pauli` has support at or beyond [`Frame::num_qubits`].
     pub(crate) fn preimage_into(
         &self,
-        pauli: PauliWords<'_>,
+        pauli: &PauliString,
         out_x: &mut [u64],
         out_z: &mut [u64],
     ) -> u8 {
@@ -959,20 +928,20 @@ impl Frame {
 
     fn preimage_into_w<const W: usize>(
         &self,
-        pauli: PauliWords<'_>,
+        pauli: &PauliString,
         out_x: &mut [u64],
         out_z: &mut [u64],
     ) -> u8 {
         out_x.fill(0);
         out_z.fill(0);
         let mut phase = 0u8;
-        for qubit in set_bits(pauli.x) {
+        for qubit in set_bits(pauli.x_words()) {
             self.accumulate::<W>(px(qubit), out_x, out_z, &mut phase);
         }
-        for qubit in set_bits(pauli.z) {
+        for qubit in set_bits(pauli.z_words()) {
             self.accumulate::<W>(pz(qubit), out_x, out_z, &mut phase);
         }
-        (phase + pauli.xz_phase_exponent()) & 3
+        (phase + xz_phase_exponent(pauli)) & 3
     }
 
     /// [`Frame::preimage_into`] for a single-qubit basis axis, without the
@@ -1040,7 +1009,7 @@ impl Frame {
     }
 
     /// [`Frame::preimage_into`] writing into one `2W`-word row.
-    fn preimage_row<const W: usize>(&self, pauli: PauliWords<'_>, out: &mut [u64]) -> u8 {
+    fn preimage_row<const W: usize>(&self, pauli: &PauliString, out: &mut [u64]) -> u8 {
         let words = width::<W>(self.words);
         let (out_x, out_z) = out[..2 * words].split_at_mut(words);
         self.preimage_into_w::<W>(pauli, out_x, out_z)
@@ -1109,25 +1078,25 @@ impl Frame {
     //
     // The simulator reads the frame through the masks above and needs a whole
     // row only to replay the state vector; the `paulimer` conversions at the
-    // end exist purely for `tests/frame_differential.rs`, which compiles this
-    // file directly. Hence the `cfg(test)` gates.
+    // end exist purely for differential tests. Hence the `cfg(test)` gates.
     //
     // They all speak in `logical_words(n)`, not the padded row width: a
     // `DensePauli` handed to or taken from `paulimer` must be as wide as
     // `paulimer` would make it, not as wide as the row kernels prefer.
 
     /// `R†·X_qubit·R`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn preimage_x(&self, qubit: usize) -> RowPauli {
         self.dense_row(px(qubit))
     }
 
     /// `R†·Z_qubit·R`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn preimage_z(&self, qubit: usize) -> RowPauli {
         self.dense_row(pz(qubit))
     }
 
+    #[cfg(test)]
     fn dense_row(&self, row: usize) -> RowPauli {
         let live = logical_words(self.n);
         let (x_bits, z_bits) = self.row(row).split_at(self.words);
@@ -1146,12 +1115,12 @@ impl Frame {
     /// (`clifford_image_with_phase`, `generic_algos.rs:363`). Per-bit work;
     /// this is a test and state-reconstruction path only.
     pub(crate) fn image_x(&self, qubit: usize) -> RowPauli {
-        self.image(qubit, |frame, row, index| frame.z_bit(row, index))
+        self.image(qubit, Frame::z_bit)
     }
 
     /// `R·Z_qubit·R†`, the stabilizer `S_qubit`.
     pub(crate) fn image_z(&self, qubit: usize) -> RowPauli {
-        self.image(qubit, |frame, row, index| frame.x_bit(row, index))
+        self.image(qubit, Frame::x_bit)
     }
 
     /// Shared image body: `read` picks the half of the tableau the image bits
@@ -1190,7 +1159,6 @@ impl Frame {
 
     /// Rebuild an equivalent `paulimer` tableau.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn to_clifford_unitary(&self) -> CliffordUnitary {
         let mut clifford = CliffordUnitary::identity(self.n);
         for qubit in 0..self.n {
@@ -1206,7 +1174,6 @@ impl Frame {
 
     /// Adopt a `paulimer` tableau.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn from_clifford_unitary(clifford: &CliffordUnitary) -> Self {
         let mut frame = Frame::identity(clifford.num_qubits());
         for qubit in 0..frame.n {
@@ -1217,7 +1184,6 @@ impl Frame {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     fn assign_dense_row(&mut self, row: usize, pauli: &DensePauli) {
         let words = self.words;
         let stride = self.stride();

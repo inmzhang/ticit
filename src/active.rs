@@ -212,7 +212,7 @@ impl PrecomputedActivePauliRotationKernel {
         }
         kernel.uniform_imag_pairs = action.zmask == 0;
         kernel.real_pair_flip = can_rotate_real_pair_flip(action);
-        kernel.pair_bit = 63 - action.xmask.leading_zeros();
+        kernel.pair_bit = action.xmask.ilog2();
         kernel.pair_count = dim >> 1;
         Ok(kernel)
     }
@@ -273,9 +273,9 @@ impl PrecomputedActivePauliMeasurementKernel {
     /// Picks the pivot: highest X qubit, else highest Z qubit.
     pub fn from_action(action: &ActivePauliAction) -> Result<Self> {
         let pivot = if action.xmask != 0 {
-            63 - action.xmask.leading_zeros()
+            action.xmask.ilog2()
         } else if action.zmask != 0 {
-            63 - action.zmask.leading_zeros()
+            action.zmask.ilog2()
         } else {
             return Err(TicitError::new(
                 "cannot build an active measurement kernel for identity Pauli",

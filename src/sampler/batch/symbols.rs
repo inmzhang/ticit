@@ -321,12 +321,9 @@ pub(crate) fn xor_symbolic_bool_batch_into(
 
 /// Growing the record count changes the column stride, so every existing
 /// column must be recopied — a plain resize would interleave old columns.
-fn ensure_batch_measurement_storage(
-    runtime: &mut BatchFactoredExecutorState,
-    record: i32,
-) -> Result<()> {
+fn ensure_batch_measurement_storage(runtime: &mut BatchFactoredExecutorState, record: i32) {
     if record as usize <= runtime.nrecords {
-        return Ok(());
+        return;
     }
     let mut next = vec![0u64; record as usize * runtime.batch_words];
     for old_record in 1..=runtime.nrecords as i32 {
@@ -337,15 +334,11 @@ fn ensure_batch_measurement_storage(
     }
     runtime.nrecords = record as usize;
     runtime.measurement_words = next;
-    Ok(())
 }
 
-fn ensure_batch_detector_storage(
-    runtime: &mut BatchFactoredExecutorState,
-    detector: i32,
-) -> Result<()> {
+fn ensure_batch_detector_storage(runtime: &mut BatchFactoredExecutorState, detector: i32) {
     if detector as usize <= runtime.ndetectors {
-        return Ok(());
+        return;
     }
     let mut next = vec![0u64; detector as usize * runtime.batch_words];
     for old_detector in 1..=runtime.ndetectors as i32 {
@@ -356,7 +349,6 @@ fn ensure_batch_detector_storage(
     }
     runtime.ndetectors = detector as usize;
     runtime.detector_words = next;
-    Ok(())
 }
 
 pub(crate) fn write_batch_measurement_record(
@@ -370,7 +362,7 @@ pub(crate) fn write_batch_measurement_record(
         if record <= 0 {
             return Err(TicitError::new("measurement record id must be positive"));
         }
-        ensure_batch_measurement_storage(runtime, record)?;
+        ensure_batch_measurement_storage(runtime, record);
         let base = batch_record_offset(runtime, record, 0);
         if nwords == runtime.batch_words && runtime.active_shots & 63 == 0 {
             runtime.measurement_words[base..base + nwords].copy_from_slice(&outcome_bits[..nwords]);
@@ -424,7 +416,7 @@ pub(crate) fn write_batch_detector_record(
         }
         return Ok(());
     }
-    ensure_batch_detector_storage(runtime, detector)?;
+    ensure_batch_detector_storage(runtime, detector);
     let base = batch_detector_offset(runtime, detector, 0);
     if nwords == runtime.batch_words && runtime.active_shots & 63 == 0 {
         runtime.detector_words[base..base + nwords].copy_from_slice(&outcome_bits[..nwords]);

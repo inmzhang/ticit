@@ -77,9 +77,9 @@ on Clifford streams, T-driven rank growth, and measurement.
 - `tableau_simulator::batch` is the replay path: consumers that run one op
   sequence per shot build an `Instruction` stream once instead of rebuilding
   `PauliString`s per shot.
-- `benches/{simulator,batch}.rs` and `examples/sim_profile.rs` cover it;
-  `tests/frame_differential.rs` pins the frame's sign conventions against
-  `paulimer`, a dev-dependency that must never reach the built library.
+- Unit tests beside `tableau_simulator` cover rank, measurement, and replay;
+  `src/tableau_simulator/frame/differential_tests.rs` pins sign conventions
+  against `paulimer`, a dev-dependency that must never reach the built library.
 
 ## Toolchain choices
 
