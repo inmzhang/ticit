@@ -10,13 +10,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::circuit::{Circuit, plan_circuit};
+use crate::circuit::{Circuit, has_postselection, plan_circuit};
+use crate::factored::FactoredInstructionProgram;
 use crate::random::block_seed;
 use crate::sampler::prepared::{
     SampleCounts, SampleResult, SamplingTiming, logical_records_for_observable,
     make_circuit_sampling_input,
 };
-use anyhow::{Context, Result, bail};
+use crate::symbolic::SymbolicCategoricalDistribution;
+use anyhow::{Context, Result, bail, ensure};
 use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 
@@ -31,6 +33,47 @@ const COUNT_REDUCTION_BLOCKS: usize = 256;
 const WIDE_WORKSPACE_BUDGET_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const WIDE_CHUNK_SHOTS: usize = 2048;
 const WIDE_LARGE_STATE_CHUNK_SHOTS: usize = 256;
+
+fn condition_exact_k(program: &mut FactoredInstructionProgram, k: usize) -> Result<()> {
+    ensure!(
+        program.sampled_categorical_distributions.is_empty()
+            && program.sampled_rare_categorical_groups.is_empty()
+            && program.sampled_low_probability_bernoulli_groups.is_empty(),
+        "exact-k sampling currently requires only ordinary Bernoulli sources"
+    );
+    ensure!(
+        program.sampled_bernoulli_conditions.len() == program.sampled_bernoulli_probabilities.len(),
+        "Bernoulli sampling plan has mismatched conditions and probabilities"
+    );
+    let n = program.sampled_bernoulli_conditions.len();
+    ensure!(n != 0, "exact-k sampling found no Bernoulli sources");
+    // ponytail: exhaustive masks keep the exact-k path tiny; use a
+    // combinatorial generator when a validation circuit exceeds 20 sources.
+    ensure!(
+        n <= 20,
+        "exact-k sampling currently supports at most 20 sources"
+    );
+    ensure!(
+        k <= n,
+        "exact-k value {k} exceeds the {n} Bernoulli sources"
+    );
+    let assignments: Vec<Vec<u64>> = (0..1u64 << n)
+        .filter(|mask| mask.count_ones() as usize == k)
+        .map(|mask| vec![mask])
+        .collect();
+    let probability = 1.0 / assignments.len() as f64;
+    let conditions = std::mem::take(&mut program.sampled_bernoulli_conditions);
+    program.sampled_bernoulli_probabilities.clear();
+    program
+        .sampled_categorical_distributions
+        .push(SymbolicCategoricalDistribution {
+            nbits: n,
+            conditions,
+            probabilities: vec![probability; assignments.len()],
+            assignments,
+        });
+    Ok(())
+}
 
 fn wide_workspace_budget() -> Result<usize> {
     let (mut free, mut total) = (0usize, 0usize);
@@ -87,6 +130,8 @@ pub fn run(args: &GpuOptions) -> Result<()> {
         0,
         parse_s,
         Some(&args.circuit),
+        false,
+        None,
     )?;
     Ok(())
 }
@@ -139,6 +184,41 @@ pub fn sample_circuit(
         observable,
         0.0,
         None,
+        false,
+        None,
+    )
+}
+
+/// Samples a parsed circuit on CUDA and retains row-major detector outcomes
+/// and expectation values for every shot.
+///
+/// When `exact_k` is set, all ordinary Bernoulli sources are conditioned on
+/// exactly that many faults. Record capture currently requires a circuit with
+/// no active detector postselection.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`sample_circuit`], when the
+/// exact-k source plan is unsupported, or when postselection is active.
+pub fn sample_circuit_records(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    observable: usize,
+    exact_k: Option<usize>,
+) -> Result<SampleResult> {
+    sample_circuit_impl(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        false,
+        observable,
+        0.0,
+        None,
+        true,
+        exact_k,
     )
 }
 
@@ -152,13 +232,27 @@ fn sample_circuit_impl(
     observable: usize,
     parse_s: f64,
     report_path: Option<&Path>,
+    keep_records: bool,
+    exact_k: Option<usize>,
 ) -> Result<SampleResult> {
     if shots == 0 {
         bail!("shots must be positive");
     }
 
     let plan_start = Instant::now();
-    let program = plan_circuit(parsed, &[]).context("failed to plan circuit")?;
+    let postselection_mask = if postselect_detectors {
+        vec![1; parsed.detector_count()]
+    } else {
+        Vec::new()
+    };
+    let mut program =
+        plan_circuit(parsed, &postselection_mask).context("failed to plan circuit")?;
+    if let Some(k) = exact_k {
+        condition_exact_k(&mut program, k)?;
+    }
+    if keep_records && has_postselection(&program) {
+        bail!("GPU record capture does not support active detector postselection");
+    }
     let logical_records = logical_records_for_observable(&parsed.observables, observable);
     let input = make_circuit_sampling_input(
         program,
@@ -174,7 +268,8 @@ fn sample_circuit_impl(
     } else {
         gpu_plan.detector_start
     };
-    let sample_tile_shots = if input.program.max_k <= 4
+    let sample_tile_shots = if !keep_records
+        && input.program.max_k <= 4
         && input.program.nexpvals == 0
         && gpu_plan.exogenous_plan.mask_words == 1
     {
@@ -190,6 +285,9 @@ fn sample_circuit_impl(
     let stream = unsafe { cutile::cuda_core::Stream::borrow_raw(std::ptr::null_mut(), &device) };
     let requested_chunk_limit = chunk_shots.get().min(i32::MAX as usize);
     let wide_dimension = (input.program.max_k > 12).then(|| 1usize << input.program.max_k);
+    if keep_records && wide_dimension.is_some() {
+        bail!("GPU record capture currently requires max_k <= 12");
+    }
     let wide_chunk_limit = if let Some(dimension) = wide_dimension {
         let workspace_budget = wide_workspace_budget()?;
         let bytes_per_shot = dimension
@@ -219,6 +317,13 @@ fn sample_circuit_impl(
     };
     let chunk_limit = requested_chunk_limit.min(wide_chunk_limit) as u64;
     let max_chunk = chunk_limit.min(shots) as usize;
+    if keep_records {
+        let rows = usize::try_from(shots).context("GPU record row count exceeds usize")?;
+        rows.checked_mul(input.program.ndetectors)
+            .context("GPU detector output is too large")?;
+        rows.checked_mul(input.program.nexpvals)
+            .context("GPU expectation output is too large")?;
+    }
     if gpu_plan.exogenous_plan.draw_count > i32::MAX as usize
         || gpu_plan.expression_plan.block_expressions.len() > i32::MAX as usize
     {
@@ -289,6 +394,13 @@ fn sample_circuit_impl(
         .max(1)
         .checked_mul(max_chunk)
         .context("GPU expectation buffer is too large")?])
+    .sync_on(&stream)?;
+    let detector_values: Tensor<u64> = cutile::api::zeros(&[input
+        .program
+        .ndetectors
+        .max(1)
+        .checked_mul(max_chunk)
+        .context("GPU detector buffer is too large")?])
     .sync_on(&stream)?;
     let count_partials: Arc<Tensor<u64>> = Arc::new(
         cutile::api::zeros(&[max_sample_blocks.div_ceil(COUNT_REDUCTION_BLOCKS) * 2])
@@ -381,6 +493,9 @@ fn sample_circuit_impl(
 
     let mut discarded = 0u64;
     let mut logical_errors = 0u64;
+    let record_rows = if keep_records { shots as usize } else { 0 };
+    let mut recorded_detectors = Vec::with_capacity(record_rows * input.program.ndetectors);
+    let mut recorded_expectations = Vec::with_capacity(record_rows * input.program.nexpvals);
     let mut warmup_s = 0.0;
     let mut exogenous_rng_s = 0.0;
     let mut exogenous_kernel_s = 0.0;
@@ -632,11 +747,13 @@ fn sample_circuit_impl(
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
                     expectations.device_pointer(),
+                    detector_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
                     gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
+                    keep_records as i32,
                     (gpu_plan.logical.block >> 6) as i32,
                     1u64 << (gpu_plan.logical.block & 63),
                     gpu_plan.logical.branch_masks[0],
@@ -658,11 +775,13 @@ fn sample_circuit_impl(
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
                     expectations.device_pointer(),
+                    detector_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
                     gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
+                    keep_records as i32,
                     (gpu_plan.logical.block >> 6) as i32,
                     1u64 << (gpu_plan.logical.block & 63),
                     gpu_plan.logical.branch_masks[0],
@@ -679,13 +798,17 @@ fn sample_circuit_impl(
                     block_counts.device_pointer(),
                     metadata.device_pointer(),
                     controls.device_pointer(),
+                    expectation_indices.device_pointer(),
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
+                    expectations.device_pointer(),
+                    detector_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
                     gpu_plan.detector_start as i32,
                     chunk as i32,
                     chunk as i32,
+                    keep_records as i32,
                     (gpu_plan.logical.block >> 6) as i32,
                     1u64 << (gpu_plan.logical.block & 63),
                     gpu_plan.logical.branch_masks[0],
@@ -857,6 +980,12 @@ fn sample_circuit_impl(
 
         let copy_start = Instant::now();
         let count_partials = (&count_partials).to_host_vec().sync_on(&stream)?;
+        let detector_chunk = keep_records
+            .then(|| (&detector_values).to_host_vec().sync_on(&stream))
+            .transpose()?;
+        let expectation_chunk = keep_records
+            .then(|| (&expectations).to_host_vec().sync_on(&stream))
+            .transpose()?;
         copy_s += copy_start.elapsed().as_secs_f64();
 
         for counts in count_partials
@@ -865,6 +994,18 @@ fn sample_circuit_impl(
         {
             discarded += counts[0];
             logical_errors += counts[1];
+        }
+        if let (Some(detector_chunk), Some(expectation_chunk)) = (detector_chunk, expectation_chunk)
+        {
+            for shot in 0..chunk {
+                for detector in 0..input.program.ndetectors {
+                    recorded_detectors.push(detector_chunk[detector * chunk + shot] as u8);
+                }
+                for expectation in 0..input.program.nexpvals {
+                    recorded_expectations
+                        .push(expectation_chunk[expectation * chunk + shot] as f64);
+                }
+            }
         }
     }
 
@@ -1018,7 +1159,41 @@ fn sample_circuit_impl(
             sample_s,
         },
         active_threads: 1,
+        record_rows,
+        detectors: recorded_detectors,
+        exp_vals: recorded_expectations,
         observable_ones,
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_k_replaces_independent_draws_with_uniform_weight_k_rows() {
+        let mut program = FactoredInstructionProgram {
+            sampled_bernoulli_conditions: vec![1, 2, 3, 4],
+            sampled_bernoulli_probabilities: vec![0.125; 4],
+            ..FactoredInstructionProgram::default()
+        };
+        condition_exact_k(&mut program, 2).expect("valid exact-k plan");
+        assert!(program.sampled_bernoulli_conditions.is_empty());
+        let distribution = &program.sampled_categorical_distributions[0];
+        assert_eq!(distribution.conditions, [1, 2, 3, 4]);
+        assert_eq!(distribution.assignments.len(), 6);
+        assert!(
+            distribution
+                .assignments
+                .iter()
+                .all(|row| row[0].count_ones() == 2)
+        );
+        assert!(
+            distribution
+                .probabilities
+                .iter()
+                .all(|&probability| (probability - 1.0 / 6.0).abs() < f64::EPSILON)
+        );
+    }
 }
