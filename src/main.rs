@@ -49,8 +49,8 @@ struct Cli {
     records_out: Option<PathBuf>,
 
     /// Condition all ordinary Bernoulli sources on exactly this many faults.
-    #[arg(long, requires = "records_out")]
-    exact_k: Option<usize>,
+    #[arg(long, requires = "records_out", value_delimiter = ',')]
+    exact_k: Vec<usize>,
 }
 
 fn main() -> Result<()> {
@@ -77,7 +77,7 @@ fn run_cpu(args: &Cli) -> Result<()> {
         .compile(options)
         .context("failed to compile circuit")?;
     let info = *sampler.info();
-    if args.exact_k.is_some() {
+    if !args.exact_k.is_empty() {
         anyhow::bail!("--exact-k currently requires the GPU backend");
     }
     let result = if args.records_out.is_some() {
@@ -109,21 +109,31 @@ fn run_gpu(args: &Cli) -> Result<()> {
     if let Some(path) = &args.records_out {
         let circuit = Circuit::from_file(&args.circuit)
             .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
-        let result = ticit::gpu::sample_circuit_records(
-            &circuit,
-            args.shots,
-            args.seed,
-            args.chunk_shots,
-            0,
-            args.exact_k,
-        )?;
-        write_records(path, &circuit, &result)?;
-        println!("shots {}", result.counts.shots);
-        println!("discarded {}", result.counts.discarded);
-        println!("accepted {}", result.counts.accepted);
-        println!("logical_errors {}", result.counts.logical_errors);
-        println!("compile_s {}", result.timing.compile_s);
-        println!("sample_s {}", result.timing.sample_s);
+        let exact_ks: Vec<Option<usize>> = if args.exact_k.is_empty() {
+            vec![None]
+        } else {
+            args.exact_k.iter().copied().map(Some).collect()
+        };
+        for exact_k in exact_ks {
+            let result = ticit::gpu::sample_circuit_records(
+                &circuit,
+                args.shots,
+                args.seed,
+                args.chunk_shots,
+                0,
+                exact_k,
+            )?;
+            let output =
+                exact_k.map_or_else(|| path.clone(), |k| suffixed_path(path, &format!("_k{k}")));
+            write_records(&output, &circuit, &result)?;
+            println!("exact_k {}", exact_k.map_or(-1, |k| k as i64));
+            println!("shots {}", result.counts.shots);
+            println!("discarded {}", result.counts.discarded);
+            println!("accepted {}", result.counts.accepted);
+            println!("logical_errors {}", result.counts.logical_errors);
+            println!("compile_s {}", result.timing.compile_s);
+            println!("sample_s {}", result.timing.sample_s);
+        }
         return Ok(());
     }
     ticit::gpu::run(&ticit::gpu::GpuOptions {
@@ -193,5 +203,15 @@ mod tests {
             .expect("GPU CLI parses");
         assert_eq!(gpu.backend, Backend::Gpu);
         assert!(Cli::try_parse_from(["ticit", "circuit.ticit", "--exact-k", "2"]).is_err());
+        let exact = Cli::try_parse_from([
+            "ticit",
+            "circuit.ticit",
+            "--records-out",
+            "rows",
+            "--exact-k",
+            "0,1,2",
+        ])
+        .expect("exact-k list parses");
+        assert_eq!(exact.exact_k, [0, 1, 2]);
     }
 }
