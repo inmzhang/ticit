@@ -58,6 +58,24 @@ discard tests have p-values 0.859 and 0.909. The zero-event CCZ rows establish
 that none of the implementations emits spurious errors at the benchmark
 exposure; they do not estimate the much rarer physical logical-error rate.
 
+To make the zero-event CCZ result less vacuous, a second Ticit CPU/GPU check
+retained every expectation value and compared each channel's sample mean using
+independent RNG streams. `max z` is the largest standardized CPU/GPU
+difference; the next column is the circuit-specific two-sided 5% Bonferroni
+threshold. No channel exceeds its threshold, and no deterministic channel
+differs.
+
+| Circuit | Shots/backend | Expectation channels | Max z | Threshold |
+|---|---:|---:|---:|---:|
+| `d05_p0` | 4,096 | 100 | 2.874 | 3.481 |
+| `d05_p1e-3` | 4,096 | 100 | 2.960 | 3.481 |
+| `d07_p0` | 2,048 | 172 | 2.283 | 3.623 |
+| `d07_p1e-3` | 2,048 | 172 | 3.253 | 3.623 |
+| `d09_p0` | 1,024 | 268 | 2.657 | 3.737 |
+| `d09_p1e-3` | 1,024 | 268 | 3.308 | 3.737 |
+| `d11_p0` | 512 | 388 | 2.668 | 3.829 |
+| `d11_p1e-3` | 512 | 388 | 3.313 | 3.829 |
+
 The code gate was 265 tests plus 13 doctests passed, one ignored, under
 `cargo test --features gpu`. A deterministic GPU smoke test and d05 exact-k
 record exports for k=0 and k=1 also completed. SymFT's five-test CUDA CTest

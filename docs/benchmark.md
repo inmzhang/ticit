@@ -153,8 +153,10 @@ ticit wins seven of the nine retained SOFT circuits. The unverified
 Only `msc_d3` and `msc_d5` postselect detectors; every other row disables
 detector postselection and counts observable 0. Before benchmarking, all 17
 circuits passed a three-way Ticit CPU / Ticit GPU / SymFT GPU statistical
-gate. The old Ticit SOFT rates were not reproduced after the correctness
-fixes—for example, `pure_d9` is 2.48 M rather than 8.91 M shots/s. Full
+gate, and every retained CCZ expectation channel passed a Bonferroni-corrected
+Ticit CPU/GPU comparison. The old Ticit SOFT rates were not reproduced after
+the correctness fixes—for example, `pure_d9` is 2.48 M rather than 8.91 M
+shots/s. Full
 correctness counts, unrounded rates, tuning sweeps, fixed-cost timings, and raw
 log locations are in
 [`2026-08-10-gpu-correctness-and-comparison.md`](impl-notes/perf/2026-08-10-gpu-correctness-and-comparison.md).
