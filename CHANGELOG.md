@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/inmzhang/ticit/compare/v0.2.0...v0.2.1) - 2026-08-11
+
+### Added
+
+- *(sampler)* add reference normalization
+- *(gpu)* export exact-k shot records ([#15](https://github.com/inmzhang/ticit/pull/15))
+
+### Other
+
+- *(lint)* fix typos false positives
+- *(format)* rename circuit extension to .tic
+- *(planner)* build tableaus from final rows
+- *(bench)* publish normalized CPU results
+- *(sampler)* skip empty reference shots
+- *(api)* use postselection masks
+- *(gpu)* drop the never-taken detector tail loop
+- remove scaffolding and colocate tests
+
 ### Added
 
 - CPU-computed reference samples and syndrome normalization for CPU and GPU sampling
