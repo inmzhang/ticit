@@ -64,12 +64,17 @@ impl SymbolicPauliString {
 // Active Pauli frame
 // ==============================================================================
 
+// Small and medium frames benefit from the existing allocation layout; beyond
+// the measured 174k-to-464k workload gap, Pauli bodies dominate peak memory.
+const COMPACT_TERM_THRESHOLD: usize = 200_000;
+
 /// A queue of conditional Pauli corrections on `k` active qubits.
 ///
 /// Alongside the term list it keeps a bitset transpose: terms are packed 64 to a
 /// block, and each block occupies `k` consecutive words indexed `[block*k + q]`
 /// with term `t` at bit `t & 63`. Conjugation then costs one word-XOR per
-/// support qubit per block instead of a scan over every term.
+/// support qubit per block instead of a scan over every term. Large frames drop
+/// the redundant Pauli bodies and retain only their condition ids.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivePauliFrame {
     pub k: usize,
@@ -86,6 +91,12 @@ impl ActivePauliFrame {
             x_term_blocks: Vec::new(),
             z_term_blocks: Vec::new(),
         }
+    }
+
+    /// Releases the query index after this frame has been retired from use.
+    pub(crate) fn release_transpose_storage(&mut self) {
+        self.x_term_blocks = Vec::new();
+        self.z_term_blocks = Vec::new();
     }
 
     /// Appends a correction gated on `condition`.
@@ -127,7 +138,16 @@ impl ActivePauliFrame {
             }
         }
         let entry = ConditionalPauliString::new(pauli.clone(), condition);
-        self.terms.push(entry.clone());
+        if term == COMPACT_TERM_THRESHOLD {
+            for retained in &mut self.terms {
+                retained.pauli = PauliString::new(0);
+            }
+        }
+        self.terms.push(if term >= COMPACT_TERM_THRESHOLD {
+            ConditionalPauliString::new(PauliString::new(0), condition)
+        } else {
+            entry.clone()
+        });
         context.bump_next_condition(condition);
         entry
     }
@@ -1458,6 +1478,26 @@ mod tests {
         // Terms with X on qubit 0 are 0 (s1), 65 (s66) and the two under s100; the
         // duplicated condition cancels.
         assert_eq!(conjugated.sign, SymbolicBool::new(false, vec![1, 66]));
+    }
+
+    #[test]
+    fn large_active_pauli_frame_compacts_redundant_bodies() {
+        let mut context = SymbolicContext::new();
+        let mut frame = ActivePauliFrame::new(1);
+        let pauli = pauli_x(1, 0);
+        for condition in 1..=(COMPACT_TERM_THRESHOLD as i32 + 1) {
+            frame.add_pauli(&pauli, condition, &mut context);
+        }
+
+        assert_eq!(frame.terms.len(), COMPACT_TERM_THRESHOLD + 1);
+        assert!(frame.terms.iter().all(|term| term.pauli.nqubits == 0));
+        let sign = conjugate_by(&frame, &pauli_z(1, 0)).sign;
+        assert_eq!(sign.conditions.len(), COMPACT_TERM_THRESHOLD + 1);
+        assert_eq!(sign.conditions.first(), Some(&1));
+        assert_eq!(
+            sign.conditions.last(),
+            Some(&(COMPACT_TERM_THRESHOLD as i32 + 1))
+        );
     }
 
     #[test]

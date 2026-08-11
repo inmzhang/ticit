@@ -12,16 +12,26 @@ every tool was a current local source build pinned to CPU 10 with one sampler
 thread. ticit used a release build with `-Ctarget-cpu=native`; SymFT used its
 native `-O3` C++ kernels.
 
+The ticit CCZ throughput, preparation, and RSS columns were refreshed again on
+2026-08-11 from the compact-handoff working tree based on `6bf96e0` (source-diff
+SHA-256 `5884de6e6c2cadad2628ad5decc5524bc601a909cd08a0f185155486c0da2f13`).
+Method and before/after data are in the
+[compact handoff report](impl-notes/perf/2026-08-11-compact-planning-handoff.md).
+The SOFT matrix stayed on the unchanged small-state path and passed a separate
+full-matrix no-regression run.
+
 Throughput is the median of three timed repeats after preparation. The Clifft
 `surface_d7_r7` value is the median of a five-repeat targeted rerun after one
-full-matrix repeat was interrupted by a transient slowdown. Preparation is a
+full-matrix repeat was interrupted by a transient slowdown. Refreshed ticit CCZ
+rates are total shots divided by the mean of three call times. Preparation is a
 single timed parse + plan/lower + reference trajectory + one-shot warm-up; the
 CCZ circuits have no detector or observable outputs, so their empty reference
-vectors take the no-op path. Full per-repeat counts and timings are retained in
-the [SOFT report](impl-notes/perf/2026-08-11-normalized-cpu-soft.md),
+vectors take the no-op path. Original per-repeat counts and timings are retained
+in the [SOFT report](impl-notes/perf/2026-08-11-normalized-cpu-soft.md),
 [CCZ report](impl-notes/perf/2026-08-11-normalized-cpu-ccz.md), and
 [Clifft rerun](impl-notes/perf/2026-08-11-normalized-cpu-surface-d7-clifft-rerun.md)
-(with adjacent JSON files).
+(with adjacent JSON files); refreshed aggregates are in the compact handoff
+report linked above.
 
 ### Sampling throughput (shots/s, single core)
 
@@ -38,14 +48,14 @@ the [SOFT report](impl-notes/perf/2026-08-11-normalized-cpu-soft.md),
 | `distillation` | **3.46 M** | 2.95 M | 122 k | 1.17x |
 | `surface_d7_r7` | **7.79 M** | 4.54 M | 156 k | 1.71x |
 | `surface_d9_r9` | **3.53 M** | 2.05 M | 73.0 k | 1.72x |
-| CCZ `d05_p0` | 288 k | **298 k** | 4.13 k | 0.966x |
-| CCZ `d05_p1e-3` | **116 k** | 58.7 k | 3.39 k | 1.98x |
-| CCZ `d07_p0` | **130 k** | 127 k | 1.82 k | 1.02x |
-| CCZ `d07_p1e-3` | **39.0 k** | 19.5 k | 1.25 k | 1.99x |
-| CCZ `d09_p0` | 59.1 k | **60.2 k** | 775 | 0.981x |
-| CCZ `d09_p1e-3` | **16.3 k** | 9.22 k | 421 | 1.77x |
-| CCZ `d11_p0` | 31.8 k | **33.7 k** | 349 | 0.942x |
-| CCZ `d11_p1e-3` | **8.58 k** | 4.77 k | 191 | 1.80x |
+| CCZ `d05_p0` | 295 k | **298 k** | 4.13 k | 0.988x |
+| CCZ `d05_p1e-3` | **125 k** | 58.6 k | 3.39 k | 2.14x |
+| CCZ `d07_p0` | **132 k** | 127 k | 1.82 k | 1.03x |
+| CCZ `d07_p1e-3` | **39.5 k** | 19.6 k | 1.25 k | 2.02x |
+| CCZ `d09_p0` | 60.0 k | **60.2 k** | 775 | 0.995x |
+| CCZ `d09_p1e-3` | **17.5 k** | 9.21 k | 421 | 1.90x |
+| CCZ `d11_p0` | 31.9 k | **33.7 k** | 349 | 0.947x |
+| CCZ `d11_p1e-3` | **8.95 k** | 4.75 k | 191 | 1.89x |
 
 ### Circuit preparation time (seconds)
 
@@ -62,36 +72,36 @@ the [SOFT report](impl-notes/perf/2026-08-11-normalized-cpu-soft.md),
 | `distillation` | 0.00543 | 0.00286 | 0.00335 |
 | `surface_d7_r7` | 0.0225 | 0.0196 | 0.0115 |
 | `surface_d9_r9` | 0.0531 | 0.0560 | 0.0268 |
-| CCZ `d05_p0` | 0.692 | 0.0680 | 0.306 |
-| CCZ `d05_p1e-3` | 2.48 | 6.05 | 2.77 |
-| CCZ `d07_p0` | 2.55 | 0.257 | 1.66 |
-| CCZ `d07_p1e-3` | 10.4 | 43.4 | 20.8 |
-| CCZ `d09_p0` | 9.69 | 0.805 | 8.28 |
-| CCZ `d09_p1e-3` | 36.1 | 218 | 93.3 |
-| CCZ `d11_p0` | 34.2 | 2.52 | 32.9 |
-| CCZ `d11_p1e-3` | 111 | 765 | 323 |
+| CCZ `d05_p0` | 0.667 | 0.0680 | 0.306 |
+| CCZ `d05_p1e-3` | 2.27 | 6.05 | 2.77 |
+| CCZ `d07_p0` | 2.49 | 0.257 | 1.66 |
+| CCZ `d07_p1e-3` | 9.88 | 43.4 | 20.8 |
+| CCZ `d09_p0` | 9.04 | 0.805 | 8.28 |
+| CCZ `d09_p1e-3` | 34.6 | 218 | 93.3 |
+| CCZ `d11_p0` | 30.6 | 2.52 | 32.9 |
+| CCZ `d11_p1e-3` | 107 | 765 | 323 |
 
-### Historical peak memory (max RSS, compile + sampling)
+### Peak memory (max RSS, compile + sampling)
 
-Peak RSS was not remeasured: reference normalization adds only one detector and
-observable vector and does not change the retained plan layout. These values
-remain the 2026-08-08 campaign at ticit `ce3eb52`, SymFT `bd77739`, and Clifft
-`b165657`; they should not be read as memory measurements of the current
-throughput builds.
+Ticit's CCZ rows are current compact-handoff measurements. SymFT's noisy d05,
+d07, and d09 rows were refreshed at `686051a` with the same pinned one-process
+protocol; the remaining SymFT and Clifft cells are from the 2026-08-08 campaign
+at `bd77739` and `b165657`. The mixed provenance is explicit because current
+SymFT d11 preprocessing alone takes about 13 minutes.
 
 | Circuit | ticit | SymFT | Clifft* |
 |---|---:|---:|---:|
 | `msc_d3` | 17.8 MB | 17.8 MB | 47.9 MB |
 | `msc_d5` | 17.6 MB | 17.6 MB | 50.2 MB |
 | `pure_surface_d9` | 29.3 MB | 29.0 MB | 56.8 MB |
-| CCZ `d05_p0` | 39.0 MB | 41.6 MB | 74.2 MB |
-| CCZ `d05_p1e-3` | 348 MB | 303 MB | 313 MB |
-| CCZ `d07_p0` | 113 MB | 135 MB | 138 MB |
-| CCZ `d07_p1e-3` | 1.17 GB | 1.00 GB | 1.18 GB |
-| CCZ `d09_p0` | 282 MB | 342 MB | 297 MB |
-| CCZ `d09_p1e-3` | 3.30 GB | 2.56 GB | 3.56 GB |
-| CCZ `d11_p0` | 641 MB | 808 MB | 636 MB |
-| CCZ `d11_p1e-3` | 7.90 GB | 5.74 GB | 8.97 GB |
+| CCZ `d05_p0` | 39.0 MiB | 41.6 MB | 74.2 MB |
+| CCZ `d05_p1e-3` | **230 MiB** | 242 MiB | 313 MB |
+| CCZ `d07_p0` | 122 MiB | 135 MB | 138 MB |
+| CCZ `d07_p1e-3` | **489 MiB** | 700 MiB | 1.18 GB |
+| CCZ `d09_p0` | 312 MiB | 342 MB | 297 MB |
+| CCZ `d09_p1e-3` | **1.05 GiB** | 1.57 GiB | 3.56 GB |
+| CCZ `d11_p0` | 716 MiB | 808 MB | 636 MB |
+| CCZ `d11_p1e-3` | **2.39 GiB** | 5.74 GB | 8.97 GB |
 
 *Clifft's column includes the Python interpreter's ~35-40 MB baseline.
 Peak RSS is planning-dominated on the noisy CCZ circuits for all three

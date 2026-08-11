@@ -270,15 +270,33 @@ pub(crate) fn plan_circuit(
     parsed: &Circuit,
     postselection_mask: &[u8],
 ) -> Result<FactoredInstructionProgram> {
-    let parsed = lowered_circuit(parsed)?;
-    let mut pending = PendingFactoredState::from_frame_state(parsed.state.clone());
-    let detector_prefixes: Vec<usize> = parsed
-        .detectors
+    let LoweredCircuit {
+        mut state,
+        measurement_records,
+        detectors,
+    } = lowered_circuit(parsed)?;
+    // Large frames hand queue/context over directly. Medium frames retain their
+    // old term allocations; small frames keep the cheap, faster clone.
+    const GUARDED_HANDOFF_MIN_ACTIVE_TERMS: usize = 100_000;
+    let mut retained_state = None;
+    let mut allocation_guard = None;
+    let mut pending = if state.active_frame.terms.len() >= GUARDED_HANDOFF_MIN_ACTIVE_TERMS {
+        allocation_guard = Some(std::mem::take(&mut state.active_frame));
+        PendingFactoredState::from_frame_state(state)
+    } else {
+        let pending = PendingFactoredState::from_frame_state(state.clone());
+        retained_state = Some(state);
+        pending
+    };
+    let detector_prefixes: Vec<usize> = detectors
         .iter()
         .map(|detector| detector.after_pending_operation)
         .collect();
     let optimization = optimize_pending_operations(&mut pending, &detector_prefixes)?;
-    let mut detectors = parsed.detectors.clone();
+    if let Some(frame) = &mut allocation_guard {
+        frame.release_transpose_storage();
+    }
+    let mut detectors = detectors;
     for detector in &mut detectors {
         let remapped = optimization
             .prefix_remap
@@ -293,12 +311,14 @@ pub(crate) fn plan_circuit(
         detector.after_pending_operation = remapped as usize;
     }
     let program = plan_factored_updates(pending)?;
-    insert_detector_events(
+    let result = insert_detector_events(
         program,
         &detectors,
-        &parsed.measurement_records,
+        &measurement_records,
         postselection_mask,
-    )
+    );
+    drop((retained_state, allocation_guard));
+    result
 }
 
 pub(crate) fn has_postselection(program: &FactoredInstructionProgram) -> bool {
