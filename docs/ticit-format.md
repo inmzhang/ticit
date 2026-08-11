@@ -1,6 +1,6 @@
-# The `.ticit` circuit format
+# The `.tic` circuit format
 
-`.ticit` is a UTF-8, line-oriented quantum-circuit format. It uses familiar
+`.tic` is a UTF-8, line-oriented quantum-circuit format. It uses familiar
 Clifft/Stim-style gate mnemonics and record targets while defining
 postselection directly in the source.
 
