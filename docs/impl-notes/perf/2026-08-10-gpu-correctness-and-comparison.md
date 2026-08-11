@@ -53,7 +53,7 @@ accepted shots. The clean matrix used runtime code identical to `339d96e`
 
 The populated three-way logical-error tests have no significant backend
 difference (smallest Pearson omnibus p-value 0.0738). Sparse-row pairwise
-exact tests are also nonsignificant (p at least 0.219), and the two MSC
+exact tests are also insignificant (p at least 0.219), and the two MSC
 discard tests have p-values 0.859 and 0.909. The zero-event CCZ rows establish
 that none of the implementations emits spurious errors at the benchmark
 exposure; they do not estimate the much rarer physical logical-error rate.
