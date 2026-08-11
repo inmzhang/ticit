@@ -280,8 +280,7 @@ struct CoordinateCache {
 /// the frame is consequently `Send` but not `Sync`, which is fine because
 /// planning is single-threaded and the sampler consumes the plan, not the frame.
 ///
-/// Writing [`rows`](Self::rows) directly leaves those caches stale — either go
-/// through [`copy_pauli_to_row`](Self::copy_pauli_to_row) or call
+/// Writing [`rows`](Self::rows) directly leaves those caches stale, so call
 /// [`invalidate_support_cache`](Self::invalidate_support_cache) afterwards.
 /// Phase-only edits are exempt: a phase never changes a row's support.
 #[derive(Clone, Debug, Default)]
@@ -318,22 +317,34 @@ impl CliffordFrame {
         frame
     }
 
+    pub(crate) fn from_xz_rows(
+        nqubits: usize,
+        mut x_rows: Vec<PauliString>,
+        z_rows: Vec<PauliString>,
+    ) -> Self {
+        assert_eq!(x_rows.len(), nqubits);
+        assert_eq!(z_rows.len(), nqubits);
+        debug_assert!(
+            x_rows
+                .iter()
+                .chain(&z_rows)
+                .all(|row| row.nqubits == nqubits)
+        );
+        x_rows.extend(z_rows);
+        Self {
+            nqubits,
+            rows: x_rows,
+            support: RefCell::new(SupportCache::default()),
+            coordinates: RefCell::new(CoordinateCache::default()),
+        }
+    }
+
     pub fn xrow(&self, q: usize) -> usize {
         check_qubit(self.nqubits, q)
     }
 
     pub fn zrow(&self, q: usize) -> usize {
         self.nqubits + check_qubit(self.nqubits, q)
-    }
-
-    /// The sanctioned way to overwrite a row: it invalidates the caches.
-    pub fn copy_pauli_to_row(&mut self, row: usize, pauli: &PauliString) {
-        assert!(
-            pauli.nqubits == self.nqubits && row < self.rows.len(),
-            "invalid Clifford frame row assignment"
-        );
-        self.rows[row] = pauli.clone();
-        self.invalidate_support_cache();
     }
 
     pub fn invalidate_support_cache(&mut self) {
@@ -1303,7 +1314,9 @@ mod tests {
         // Populate the lazy support cache.
         assert_eq!(preimage(&frame, &pauli_x(3, 0)), parse("XXI"));
 
-        frame.copy_pauli_to_row(frame.xrow(0), &parse("XIX"));
+        let row = frame.xrow(0);
+        frame.rows[row] = parse("XIX");
+        frame.invalidate_support_cache();
         assert_eq!(preimage(&frame, &pauli_x(3, 0)), parse("XIX"));
 
         // Writing `rows` directly is allowed but the caller owns the invalidation.
@@ -1411,7 +1424,9 @@ mod tests {
     fn coordinates_reject_a_tableau_that_no_longer_spans() {
         let mut frame = CliffordFrame::new(2);
         // Collapsing a row destroys the symplectic basis.
-        frame.copy_pauli_to_row(frame.xrow(0), &parse("II"));
+        let row = frame.xrow(0);
+        frame.rows[row] = parse("II");
+        frame.invalidate_support_cache();
 
         let error = coordinates_in_frame(&frame, &pauli_x(2, 0)).expect_err("body is unreachable");
         assert_eq!(error.to_string(), "frame rows do not span the Pauli body");

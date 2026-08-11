@@ -2,8 +2,12 @@
 
 ## CPU: ticit vs SymFT vs Clifft
 
-Remeasured on 2026-08-11 at ticit `78ca59b`, SymFT `686051a`, and Clifft
-`b2a501d` (`0.7.1.dev34+gb2a501ddb`). The machine is an Intel Core i5-14600KF;
+Sampling was remeasured on 2026-08-11 at ticit `78ca59b`, SymFT `686051a`, and
+Clifft `b2a501d` (`0.7.1.dev34+gb2a501ddb`). Ticit's CCZ preparation times were
+refreshed later that day from the native release worktree based on `a410f4d`
+with the direct-row planner change described in
+[`2026-08-11-clifft-f295361-followups.md`](impl-notes/perf/2026-08-11-clifft-f295361-followups.md).
+The machine is an Intel Core i5-14600KF;
 every tool was a current local source build pinned to CPU 10 with one sampler
 thread. ticit used a release build with `-Ctarget-cpu=native`; SymFT used its
 native `-O3` C++ kernels.
@@ -58,14 +62,14 @@ the [SOFT report](impl-notes/perf/2026-08-11-normalized-cpu-soft.md),
 | `distillation` | 0.00543 | 0.00286 | 0.00335 |
 | `surface_d7_r7` | 0.0225 | 0.0196 | 0.0115 |
 | `surface_d9_r9` | 0.0531 | 0.0560 | 0.0268 |
-| CCZ `d05_p0` | 0.728 | 0.0680 | 0.306 |
-| CCZ `d05_p1e-3` | 2.46 | 6.05 | 2.77 |
-| CCZ `d07_p0` | 2.73 | 0.257 | 1.66 |
+| CCZ `d05_p0` | 0.692 | 0.0680 | 0.306 |
+| CCZ `d05_p1e-3` | 2.48 | 6.05 | 2.77 |
+| CCZ `d07_p0` | 2.55 | 0.257 | 1.66 |
 | CCZ `d07_p1e-3` | 10.4 | 43.4 | 20.8 |
-| CCZ `d09_p0` | 9.59 | 0.805 | 8.28 |
+| CCZ `d09_p0` | 9.69 | 0.805 | 8.28 |
 | CCZ `d09_p1e-3` | 36.1 | 218 | 93.3 |
-| CCZ `d11_p0` | 32.0 | 2.52 | 32.9 |
-| CCZ `d11_p1e-3` | 121 | 765 | 323 |
+| CCZ `d11_p0` | 34.2 | 2.52 | 32.9 |
+| CCZ `d11_p1e-3` | 111 | 765 | 323 |
 
 ### Historical peak memory (max RSS, compile + sampling)
 

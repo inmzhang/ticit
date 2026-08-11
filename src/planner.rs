@@ -709,56 +709,45 @@ fn dormant_rotation_promotion_tableau_frame(
         ));
     }
 
-    let mut frame = CliffordFrame::new(state.n);
+    let mut x_rows = Vec::with_capacity(state.n);
+    let mut z_rows = Vec::with_capacity(state.n);
     for q in 0..old_k {
-        let row = frame.zrow(q);
-        frame.copy_pauli_to_row(
-            row,
-            &multiply_by_stabilizer_if_anticommutes(pauli_z(state.n, q), &promoted_x, &stabilizer),
-        );
-        let row = frame.xrow(q);
-        frame.copy_pauli_to_row(
-            row,
-            &multiply_by_stabilizer_if_anticommutes(pauli_x(state.n, q), &promoted_x, &stabilizer),
-        );
+        z_rows.push(multiply_by_stabilizer_if_anticommutes(
+            pauli_z(state.n, q),
+            &promoted_x,
+            &stabilizer,
+        ));
+        x_rows.push(multiply_by_stabilizer_if_anticommutes(
+            pauli_x(state.n, q),
+            &promoted_x,
+            &stabilizer,
+        ));
     }
 
-    let row = frame.zrow(old_k);
-    frame.copy_pauli_to_row(row, &stabilizer);
-    let row = frame.xrow(old_k);
-    frame.copy_pauli_to_row(row, &promoted_x);
+    z_rows.push(stabilizer.clone());
+    x_rows.push(promoted_x.clone());
 
-    let mut new_q = old_k + 1;
     for old_q in old_k..state.n {
         if old_q == picked_q {
             continue;
         }
-        let row = frame.zrow(new_q);
-        frame.copy_pauli_to_row(
-            row,
-            &multiply_by_stabilizer_if_anticommutes(
-                pauli_z(state.n, old_q),
-                &promoted_x,
-                &stabilizer,
-            ),
-        );
-        let row = frame.xrow(new_q);
-        frame.copy_pauli_to_row(
-            row,
-            &multiply_by_stabilizer_if_anticommutes(
-                pauli_x(state.n, old_q),
-                &promoted_x,
-                &stabilizer,
-            ),
-        );
-        new_q += 1;
+        z_rows.push(multiply_by_stabilizer_if_anticommutes(
+            pauli_z(state.n, old_q),
+            &promoted_x,
+            &stabilizer,
+        ));
+        x_rows.push(multiply_by_stabilizer_if_anticommutes(
+            pauli_x(state.n, old_q),
+            &promoted_x,
+            &stabilizer,
+        ));
     }
-    if new_q != state.n {
+    if x_rows.len() != state.n {
         return Err(TicitError::new(
             "dormant rotation promotion frame did not repack dormant rows",
         ));
     }
-    Ok(frame)
+    Ok(CliffordFrame::from_xz_rows(state.n, x_rows, z_rows))
 }
 
 /// Frame for measuring a Pauli that reaches a dormant qubit.
@@ -780,35 +769,26 @@ fn dormant_measurement_replacement_tableau_frame(
         ));
     }
 
-    let mut frame = CliffordFrame::new(state.n);
+    let mut x_rows = Vec::with_capacity(state.n);
+    let mut z_rows = Vec::with_capacity(state.n);
     for q in 0..state.n {
         if q == picked_q {
-            continue;
-        }
-        let row = frame.zrow(q);
-        frame.copy_pauli_to_row(
-            row,
-            &multiply_by_stabilizer_if_anticommutes(
+            x_rows.push(old_stabilizer.clone());
+            z_rows.push(new_stabilizer.clone());
+        } else {
+            z_rows.push(multiply_by_stabilizer_if_anticommutes(
                 pauli_z(state.n, q),
                 &new_stabilizer,
                 &old_stabilizer,
-            ),
-        );
-        let row = frame.xrow(q);
-        frame.copy_pauli_to_row(
-            row,
-            &multiply_by_stabilizer_if_anticommutes(
+            ));
+            x_rows.push(multiply_by_stabilizer_if_anticommutes(
                 pauli_x(state.n, q),
                 &new_stabilizer,
                 &old_stabilizer,
-            ),
-        );
+            ));
+        }
     }
-    let row = frame.zrow(picked_q);
-    frame.copy_pauli_to_row(row, &new_stabilizer);
-    let row = frame.xrow(picked_q);
-    frame.copy_pauli_to_row(row, &old_stabilizer);
-    Ok(frame)
+    Ok(CliffordFrame::from_xz_rows(state.n, x_rows, z_rows))
 }
 
 /// Frame for retiring the coordinate an active measurement consumes.
@@ -821,7 +801,6 @@ fn active_measurement_coordinate_frame(
     active_body: &PauliString,
     kernel: &PrecomputedActivePauliMeasurementKernel,
 ) -> Result<CliffordFrame> {
-    let mut frame = CliffordFrame::new(state.n);
     let k = state.k;
     let pivot = kernel.pivot;
     let measured = embed_active_pauli(state.n, active_body);
@@ -830,12 +809,8 @@ fn active_measurement_coordinate_frame(
     } else {
         pauli_z(state.n, pivot)
     };
-    let row = frame.xrow(k - 1);
-    frame.copy_pauli_to_row(row, &fixed_x);
-    let row = frame.zrow(k - 1);
-    frame.copy_pauli_to_row(row, &measured);
-
-    let mut new_q = 0;
+    let mut x_rows = Vec::with_capacity(state.n);
+    let mut z_rows = Vec::with_capacity(state.n);
     for old_q in 0..k {
         if old_q == pivot {
             continue;
@@ -854,18 +829,21 @@ fn active_measurement_coordinate_frame(
                 xrow = &xrow * &pauli_z(state.n, pivot);
             }
         }
-        let row = frame.xrow(new_q);
-        frame.copy_pauli_to_row(row, &xrow);
-        let row = frame.zrow(new_q);
-        frame.copy_pauli_to_row(row, &zrow);
-        new_q += 1;
+        x_rows.push(xrow);
+        z_rows.push(zrow);
     }
-    if new_q != k - 1 {
+    if x_rows.len() != k - 1 {
         return Err(TicitError::new(
             "active measurement tableau dropped the wrong number of qubits",
         ));
     }
-    Ok(frame)
+    x_rows.push(fixed_x);
+    z_rows.push(measured);
+    for q in k..state.n {
+        x_rows.push(pauli_x(state.n, q));
+        z_rows.push(pauli_z(state.n, q));
+    }
+    Ok(CliffordFrame::from_xz_rows(state.n, x_rows, z_rows))
 }
 
 fn transform_operation_by_frame(
