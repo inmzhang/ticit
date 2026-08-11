@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "ticit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "binar",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "ticit_py"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "num-complex",
  "numpy",
