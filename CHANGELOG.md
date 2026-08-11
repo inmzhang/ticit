@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/inmzhang/ticit/compare/v0.2.1...v0.2.2) - 2026-08-11
+
+### Other
+
+- *(planner)* reduce large-frame peak memory
+
 ## [0.2.1](https://github.com/inmzhang/ticit/compare/v0.2.0...v0.2.1) - 2026-08-11
 
 ### Added
