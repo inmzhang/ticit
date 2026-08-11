@@ -1,0 +1,74 @@
+[
+  {
+    "case_id": "surface_d7_r7__clifft",
+    "circuit": "surface_d7_r7",
+    "group": "pure-clifford",
+    "tool": "clifft",
+    "status": "OK",
+    "cpu": 10,
+    "postselect": false,
+    "input_shots": 100000,
+    "sample_seconds": 10.0,
+    "repeats": 5,
+    "version": "0.7.1.dev34+gb2a501ddb",
+    "precision": "FP64",
+    "threads": 1,
+    "normalize_syndromes": true,
+    "reference_source": "symft",
+    "compile_s": 0.04012121100095101,
+    "shots_per_call": 100000,
+    "runs": [
+      {
+        "repeat": 1,
+        "shots": 1600000,
+        "discarded": 0,
+        "accepted": 1600000,
+        "logical_errors": 167697,
+        "sample_s": 10.258551995000744,
+        "api_calls": 16,
+        "shots_per_second": 155967.43095709034
+      },
+      {
+        "repeat": 2,
+        "shots": 1600000,
+        "discarded": 0,
+        "accepted": 1600000,
+        "logical_errors": 167249,
+        "sample_s": 10.27371257699997,
+        "api_calls": 16,
+        "shots_per_second": 155737.27491481142
+      },
+      {
+        "repeat": 3,
+        "shots": 1600000,
+        "discarded": 0,
+        "accepted": 1600000,
+        "logical_errors": 167424,
+        "sample_s": 10.382851852984459,
+        "api_calls": 16,
+        "shots_per_second": 154100.24361852897
+      },
+      {
+        "repeat": 4,
+        "shots": 1600000,
+        "discarded": 0,
+        "accepted": 1600000,
+        "logical_errors": 167396,
+        "sample_s": 10.359691810997901,
+        "api_calls": 16,
+        "shots_per_second": 154444.7488584006
+      },
+      {
+        "repeat": 5,
+        "shots": 1600000,
+        "discarded": 0,
+        "accepted": 1600000,
+        "logical_errors": 167906,
+        "sample_s": 10.269574883015594,
+        "api_calls": 16,
+        "shots_per_second": 155800.02271040165
+      }
+    ],
+    "shots_per_second_avg": 155209.9442118466
+  }
+]

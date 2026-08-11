@@ -2,53 +2,78 @@
 
 ## CPU: ticit vs SymFT vs Clifft
 
-The ticit sampling rows were rechecked at commit `800c87c` (2026-08-09) on an
-Intel Core i5-14600KF, pinned to one P-core, one sampler thread; the original
-three-way campaign and the preparation/RSS tables were measured at `ce3eb52`
-(2026-08-08). ticit built with
-`-Ctarget-cpu=native`; SymFT is the native C++ reference build
-(`-O3`, `-march=native` kernels, AVX-512); Clifft is a dev build
-(`0.0.1.dev95`) driven through its Python API (its sampling core is
-native). Unless noted below, throughput numbers are medians of three
-interleaved runs on a quiet machine; compile and memory are single runs that
-repeat within ~3%.
+Remeasured on 2026-08-11 at ticit `78ca59b`, SymFT `686051a`, and Clifft
+`b2a501d` (`0.7.1.dev34+gb2a501ddb`). The machine is an Intel Core i5-14600KF;
+every tool was a current local source build pinned to CPU 10 with one sampler
+thread. ticit used a release build with `-Ctarget-cpu=native`; SymFT used its
+native `-O3` C++ kernels.
+
+Throughput is the median of three timed repeats after preparation. The Clifft
+`surface_d7_r7` value is the median of a five-repeat targeted rerun after one
+full-matrix repeat was interrupted by a transient slowdown. Preparation is a
+single timed parse + plan/lower + reference trajectory + one-shot warm-up; the
+CCZ circuits have no detector or observable outputs, so their empty reference
+vectors take the no-op path. Full per-repeat counts and timings are retained in
+the [SOFT report](impl-notes/perf/2026-08-11-normalized-cpu-soft.md),
+[CCZ report](impl-notes/perf/2026-08-11-normalized-cpu-ccz.md), and
+[Clifft rerun](impl-notes/perf/2026-08-11-normalized-cpu-surface-d7-clifft-rerun.md)
+(with adjacent JSON files).
 
 ### Sampling throughput (shots/s, single core)
 
 | Circuit | ticit | SymFT | Clifft | ticit / SymFT |
 |---|---:|---:|---:|---:|
-| `msc_d3` | **5.19 M** | 3.53 M | 865 k | 1.47x |
-| `msc_d3` postselected | **5.93 M** | 4.38 M | 1.13 M | 1.35x |
-| `msc_d5` | 66.8 k | 67.2 k | 22.1 k | 0.99x |
-| `msc_d5` postselected | 248 k | 249 k | 87.4 k | 0.99x |
-| `distillation` | **3.48 M** | 2.35 M | 135 k | 1.48x |
-| `pure_surface_d9` | **3.58 M** | 2.19 M | 80.5 k | 1.63x |
-| CCZ `d05_p0` | **287 k** | 254 k | 4.40 k | 1.13x |
-| CCZ `d05_p1e-3` | **121 k** | 59.3 k | 3.59 k | 2.04x |
-| CCZ `d07_p0` | **129 k** | 110 k | 1.94 k | 1.18x |
-| CCZ `d07_p1e-3` | **36.3 k** | 18.0 k | 677 | 2.02x |
-| CCZ `d09_p0` | **55.9 k** | 54.9 k | 796 | 1.02x |
-| CCZ `d09_p1e-3` | **16.9 k** | 8.78 k | 420 | 1.92x |
-| CCZ `d11_p0` | 30.1 k | 31.3 k | 358 | 0.96x |
-| CCZ `d11_p1e-3` | **8.91 k** | 4.65 k | 199 | 1.92x |
+| `msc_d3` (postselected) | **5.90 M** | 4.27 M | 1.00 M | 1.38x |
+| `msc_d5` (postselected) | 237 k | **280 k** | 80.8 k | 0.848x |
+| `msc_d7` | 106 | **108** | 52.0 | 0.980x |
+| `msc_proxy_d7` | 94.1 k | **105 k** | 25.0 k | 0.894x |
+| `coherent_d3_r1` | **4.93 M** | 4.49 M | 1.87 M | 1.10x |
+| `coherent_d3_r3` | 655 k | **679 k** | 254 k | 0.965x |
+| `coherent_d5_r1` | 38.7 k | **41.5 k** | 16.9 k | 0.932x |
+| `coherent_d5_r5` | 14.4 | **15.3** | 0.773 | 0.942x |
+| `distillation` | **3.46 M** | 2.95 M | 122 k | 1.17x |
+| `surface_d7_r7` | **7.79 M** | 4.54 M | 156 k | 1.71x |
+| `surface_d9_r9` | **3.53 M** | 2.05 M | 73.0 k | 1.72x |
+| CCZ `d05_p0` | 288 k | **298 k** | 4.13 k | 0.966x |
+| CCZ `d05_p1e-3` | **116 k** | 58.7 k | 3.39 k | 1.98x |
+| CCZ `d07_p0` | **130 k** | 127 k | 1.82 k | 1.02x |
+| CCZ `d07_p1e-3` | **39.0 k** | 19.5 k | 1.25 k | 1.99x |
+| CCZ `d09_p0` | 59.1 k | **60.2 k** | 775 | 0.981x |
+| CCZ `d09_p1e-3` | **16.3 k** | 9.22 k | 421 | 1.77x |
+| CCZ `d11_p0` | 31.8 k | **33.7 k** | 349 | 0.942x |
+| CCZ `d11_p1e-3` | **8.58 k** | 4.77 k | 191 | 1.80x |
 
-### Circuit compilation time (parse + plan + prepare, seconds)
+### Circuit preparation time (seconds)
 
 | Circuit | ticit | SymFT | Clifft |
 |---|---:|---:|---:|
-| `msc_d3` | 0.005 | 0.02 | 0.001 |
-| `msc_d5` | 0.05 | 0.08 | 0.003 |
-| `pure_surface_d9` | 0.05 | 0.07 | 0.015 |
-| CCZ `d05_p0` | 0.79 | 0.70 | 0.43 |
-| CCZ `d05_p1e-3` | **2.7** | 8.2 | 3.0 |
-| CCZ `d07_p0` | 2.9 | 2.8 | 2.5 |
-| CCZ `d07_p1e-3` | **11.2** | 53.7 | 22.0 |
-| CCZ `d09_p0` | 10.3 | 8.9 | 11.6 |
-| CCZ `d09_p1e-3` | **38.5** | 257 | 99.4 |
-| CCZ `d11_p0` | 32.4 | 29.6 | 43.3 |
-| CCZ `d11_p1e-3` | **115** | 885 | 338 |
+| `msc_d3` | 0.00590 | 0.00377 | 0.0285 |
+| `msc_d5` | 0.0609 | 0.0378 | 0.0168 |
+| `msc_d7` | 0.459 | 0.224 | 0.103 |
+| `msc_proxy_d7` | 0.261 | 0.115 | 0.0469 |
+| `coherent_d3_r1` | 0.00108 | 0.000927 | 0.000785 |
+| `coherent_d3_r3` | 0.00237 | 0.00209 | 0.00159 |
+| `coherent_d5_r1` | 0.00446 | 0.00418 | 0.00290 |
+| `coherent_d5_r5` | 0.164 | 0.157 | 1.38 |
+| `distillation` | 0.00543 | 0.00286 | 0.00335 |
+| `surface_d7_r7` | 0.0225 | 0.0196 | 0.0115 |
+| `surface_d9_r9` | 0.0531 | 0.0560 | 0.0268 |
+| CCZ `d05_p0` | 0.728 | 0.0680 | 0.306 |
+| CCZ `d05_p1e-3` | 2.46 | 6.05 | 2.77 |
+| CCZ `d07_p0` | 2.73 | 0.257 | 1.66 |
+| CCZ `d07_p1e-3` | 10.4 | 43.4 | 20.8 |
+| CCZ `d09_p0` | 9.59 | 0.805 | 8.28 |
+| CCZ `d09_p1e-3` | 36.1 | 218 | 93.3 |
+| CCZ `d11_p0` | 32.0 | 2.52 | 32.9 |
+| CCZ `d11_p1e-3` | 121 | 765 | 323 |
 
-### Peak memory (max RSS, compile + sampling)
+### Historical peak memory (max RSS, compile + sampling)
+
+Peak RSS was not remeasured: reference normalization adds only one detector and
+observable vector and does not change the retained plan layout. These values
+remain the 2026-08-08 campaign at ticit `ce3eb52`, SymFT `bd77739`, and Clifft
+`b165657`; they should not be read as memory measurements of the current
+throughput builds.
 
 | Circuit | ticit | SymFT | Clifft* |
 |---|---:|---:|---:|
@@ -71,57 +96,40 @@ peaks.
 
 ### Notes on fairness
 
-- The ticit benchmark driver uses `sample_counts_with_seed`, matching the
-  aggregate-counter contract used by the SymFT and Clifft survivor paths. The
-  public `sample`/`sample_with_seed` methods additionally materialize Clifft-
-  shaped per-shot records and are not represented by these throughput rows.
-- The ticit benchmark invocations now default to `normalize_syndromes=true`,
-  computing one noiseless CPU reference during preparation for both CPU and GPU
-  runs.
-  The tables above were measured before that default changed; their timed
-  sampling regions do not include reference preparation.
-- Circuits: `msc_d3_inject_cultivate_p1e-3`,
-  `msc_d5_inject_cultivate_p1e-3`, `distillation`, and
-  `pure_surface_d9_r9_p1e-3` from `testdata/circuits/soft/`; CCZ non-tels
-  circuits from `testdata/circuits/ccz/` (`.clifft`, Stim format) at distance
-  5/7/9/11 with p=0 and p=1e-3.
-- Postselected discard counts agree across tools where semantics align
-  (31.4% on `msc_d3` for ticit and Clifft alike); Clifft reports logical
-  errors over all shots when not postselecting, ticit/SymFT over accepted
-  shots. Throughput is unaffected.
-- Clifft solves a different problem shape on the CCZ circuits (survivor
-  sampling with full syndrome tracking), which is where its throughput
-  gap is largest; treat those rows as cross-tool context, not a
-  like-for-like kernel comparison.
-- The historical distillation row used raw parity and no detector postselection. ticit and
-  SymFT produced identical aggregate counters over 60 million shots; Clifft's
-  dev95 survivor API reported every attempted shot as passed, so its throughput
-  is cross-tool context rather than identical output-contract work. The circuit
-  has five observables; logical-error counts are deliberately not compared.
-- ticit's compile-time lead on noisy circuits comes from hash-map interning
-  and a candidate-bounded parent search in expression-plan preparation;
-  its memory premium there (~15% at d05, growing to +29-38% at d09/d11
-  p=1e-3) is unattributed in detail — the plan interner's owned keys are
-  the leading suspect (see `docs/impl-notes/perf/`).
-- Where ticit and SymFT are at parity (`msc_d5`, `d09_p0`, `d11_p0`), the
-  workload is dominated by large-dimension active-state kernels that
-  neither tool has specialized; ticit's biggest wins are the dim-16
-  register-resident rotation runs (msc_d3) and the sparse presample
-  representation (noisy CCZ, `pure_surface_d9`).
-- The msc_d3/pure_surface_d9/d05/d07 throughput rows are medians of three
-  interleaved runs; the msc_d5/d09/d11 rows are single processes with
-  in-process sample repeats (their compile times make interleaved
-  external repeats impractical — SymFT's d11_p1e-3 compile alone is
-  ~15 minutes).
-- The distillation ticit value is the mean of two interleaved current-build
-  runs; SymFT and Clifft are three in-process repeats.
+- Every row uses reference-normalized detector and observable bits. All three
+  exact simulators receive the same SymFT reference trajectory; this avoids
+  backend-local RNG/compiler ordering choosing different valid noiseless
+  branches. Reference preparation is outside sampling throughput but included
+  in preparation time.
+- `msc_d3` and `msc_d5` use an all-detector postselection mask. Every other
+  circuit uses an empty mask. All tools report aggregate attempted, discarded,
+  accepted, and observable-0 counts; no tool materializes per-shot records in
+  the timed region.
+- The full matrices have 57/57 successful tool/circuit rows. Shot accounting is
+  exact, non-postselected rows discard zero shots, and cross-tool discard and
+  observable-0 rates agree within sampling noise. In particular,
+  `distillation` is now compared on observable 0 under one shared reference
+  convention instead of mixing raw and normalized parity.
+- The CCZ fixtures contain `EXP_VAL` operations but no detector or observable
+  annotations. Their discard and logical-error counters are therefore empty;
+  the table compares circuit execution, not full syndrome output work.
+- The full-run Clifft `surface_d7_r7` rates were 156k, 149k, and 114k shots/s.
+  A quiet five-repeat rerun produced 154k-156k with a 1.2% range, confirming the
+  final repeat was a transient system slowdown.
+- ticit is faster than SymFT on 10 of 19 circuits. The largest current CPU wins
+  are 1.71-1.72x on the pure-Clifford surface circuits and 1.77-1.99x on noisy
+  CCZ; noiseless CCZ and the larger MSC cases remain near parity or favor
+  SymFT.
 
 ## GPU: ticit vs SymFT
 
 Remeasured with ticit `339d96e` and SymFT `925078b` on RTX 4090 D cards on
 2026-08-10. Rates are sampling-only attempted shots/s after per-circuit tuning;
 parsing, planning, RNG setup, and ticit's one-time cuTile JIT are reported
-separately. H200 results are omitted from this refresh.
+separately. These rates predate the 2026-08-11 normalization work and were not
+rerun in the CPU refresh. Current GPU benchmark preparation computes the
+reference trajectory separately on CPU and passes it to the GPU sampler. H200
+results are omitted from this refresh.
 
 ### SOFT circuits (shots/s)
 
@@ -155,13 +163,13 @@ ticit wins seven of the nine retained SOFT circuits. The unverified
 | `d11_p1e-3` | 1.23 M | 4.75 k | 260x |
 | **Geometric mean** |  |  | **202x** |
 
-Only `msc_d3` and `msc_d5` postselect detectors; every other row disables
-detector postselection and counts observable 0. Before benchmarking, all 17
-circuits passed a three-way Ticit CPU / Ticit GPU / SymFT GPU statistical
-gate, and every retained CCZ expectation channel passed a Bonferroni-corrected
-Ticit CPU/GPU comparison. The old Ticit SOFT rates were not reproduced after
-the correctness fixes—for example, `pure_d9` is 2.48 M rather than 8.91 M
-shots/s. Full
+Only `msc_d3` and `msc_d5` use all-detector postselection masks; every other
+row uses an empty mask and counts observable 0. Before benchmarking, all 17
+circuits passed a three-way Ticit CPU / Ticit GPU / SymFT GPU statistical gate,
+and every retained CCZ expectation channel passed a Bonferroni-corrected Ticit
+CPU/GPU comparison. The old Ticit SOFT rates were not reproduced after the
+correctness fixes—for example, `pure_d9` is 2.48 M rather than 8.91 M shots/s.
+Full
 correctness counts, unrounded rates, tuning sweeps, fixed-cost timings, and raw
 log locations are in
 [`2026-08-10-gpu-correctness-and-comparison.md`](impl-notes/perf/2026-08-10-gpu-correctness-and-comparison.md).

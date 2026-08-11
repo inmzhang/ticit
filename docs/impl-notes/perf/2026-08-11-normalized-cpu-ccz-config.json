@@ -1,0 +1,101 @@
+{
+  "run": {
+    "cpu": 10,
+    "sample_seconds": 10,
+    "repeats": 3,
+    "compile_timeout_seconds": 1800,
+    "seed": 20260811,
+    "circuit_dir": "../../../testdata/circuits/ccz",
+    "report": "2026-08-11-normalized-cpu-ccz.md"
+  },
+  "shots": {
+    "clifft_call": {
+      "ccz_d05_p0": 1000,
+      "ccz_d05_p1e-3": 1000,
+      "ccz_d07_p0": 500,
+      "ccz_d07_p1e-3": 500,
+      "ccz_d09_p0": 200,
+      "ccz_d09_p1e-3": 200,
+      "ccz_d11_p0": 100,
+      "ccz_d11_p1e-3": 100
+    },
+    "symft_call": {
+      "ccz_d05_p0": 100000,
+      "ccz_d05_p1e-3": 50000,
+      "ccz_d07_p0": 50000,
+      "ccz_d07_p1e-3": 10000,
+      "ccz_d09_p0": 20000,
+      "ccz_d09_p1e-3": 5000,
+      "ccz_d11_p0": 10000,
+      "ccz_d11_p1e-3": 2000
+    },
+    "ticit_call": {
+      "ccz_d05_p0": 100000,
+      "ccz_d05_p1e-3": 50000,
+      "ccz_d07_p0": 50000,
+      "ccz_d07_p1e-3": 10000,
+      "ccz_d09_p0": 20000,
+      "ccz_d09_p1e-3": 5000,
+      "ccz_d11_p0": 10000,
+      "ccz_d11_p1e-3": 2000
+    }
+  },
+  "circuits": [
+    {
+      "id": "ccz_d05_p0",
+      "group": "ccz",
+      "file": "d05_p0.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d05_p1e-3",
+      "group": "ccz",
+      "file": "d05_p1e-3.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d07_p0",
+      "group": "ccz",
+      "file": "d07_p0.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d07_p1e-3",
+      "group": "ccz",
+      "file": "d07_p1e-3.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d09_p0",
+      "group": "ccz",
+      "file": "d09_p0.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d09_p1e-3",
+      "group": "ccz",
+      "file": "d09_p1e-3.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d11_p0",
+      "group": "ccz",
+      "file": "d11_p0.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    },
+    {
+      "id": "ccz_d11_p1e-3",
+      "group": "ccz",
+      "file": "d11_p1e-3.clifft",
+      "postselect": false,
+      "tools": ["clifft", "symft", "ticit"]
+    }
+  ]
+}
