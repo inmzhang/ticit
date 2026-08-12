@@ -270,20 +270,47 @@ impl PyProgram {
                     postselection_mask,
                     expected_detectors,
                     expected_observables,
-                } => ticit::gpu::sample_circuit_with_reference(
-                    circuit,
-                    shots,
-                    seed.unwrap_or_else(random_seed),
-                    *chunk_shots,
-                    postselection_mask,
-                    observable,
-                    expected_detectors,
-                    expected_observables,
-                )
-                .map_err(|error| PyRuntimeError::new_err(error.to_string())),
+                } => {
+                    let seed = seed.unwrap_or_else(random_seed);
+                    let result = if keep_records {
+                        ticit::gpu::sample_circuit_with_reference(
+                            circuit,
+                            shots,
+                            seed,
+                            *chunk_shots,
+                            postselection_mask,
+                            observable,
+                            expected_detectors,
+                            expected_observables,
+                        )
+                    } else {
+                        ticit::gpu::sample_circuit_counts_with_reference(
+                            circuit,
+                            shots,
+                            seed,
+                            *chunk_shots,
+                            postselection_mask,
+                            observable,
+                            expected_detectors,
+                            expected_observables,
+                        )
+                    };
+                    result.map_err(|error| PyRuntimeError::new_err(error.to_string()))
+                }
             }
         })?;
         let mut result = result;
+        #[cfg(feature = "gpu")]
+        if self.backend_name == "gpu" && keep_records && bit_packed {
+            result.measurements = pack_rows(
+                result.measurements,
+                result.record_rows,
+                self.num_measurements,
+            )?;
+            result.detectors = pack_rows(result.detectors, result.record_rows, self.num_detectors)?;
+            result.observables =
+                pack_rows(result.observables, result.record_rows, self.num_observables)?;
+        }
         result.bit_packed = bit_packed;
         if keep_records && u64::try_from(result.record_rows) != Ok(result.counts.accepted) {
             return Err(PyRuntimeError::new_err(format!(
@@ -483,6 +510,44 @@ impl PySampleResult {
 
 fn output_columns(bits: usize, bit_packed: bool) -> usize {
     if bit_packed { bits.div_ceil(8) } else { bits }
+}
+
+#[cfg(feature = "gpu")]
+fn pack_rows(rows: Vec<u8>, row_count: usize, column_count: usize) -> PyResult<Vec<u8>> {
+    let packed_columns = output_columns(column_count, true);
+    let expected_len = row_count
+        .checked_mul(column_count)
+        .ok_or_else(|| PyRuntimeError::new_err("record output size exceeds usize"))?;
+    if rows.len() != expected_len {
+        return Err(PyRuntimeError::new_err(
+            "GPU record output has an invalid shape",
+        ));
+    }
+    let packed_len = row_count
+        .checked_mul(packed_columns)
+        .ok_or_else(|| PyRuntimeError::new_err("packed record output size exceeds usize"))?;
+    let mut packed = vec![0u8; packed_len];
+    for row in 0..row_count {
+        for column in 0..column_count {
+            if rows[row * column_count + column] != 0 {
+                packed[row * packed_columns + column / 8] |= 1 << (column % 8);
+            }
+        }
+    }
+    Ok(packed)
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod tests {
+    use super::pack_rows;
+
+    #[test]
+    fn pack_rows_uses_little_endian_bits() {
+        assert_eq!(
+            pack_rows(vec![1, 0, 1, 0, 0, 0, 0, 1, 1], 1, 9).expect("packs"),
+            vec![0x85, 0x01]
+        );
+    }
 }
 
 fn array2<T: numpy::Element>(
@@ -766,10 +831,11 @@ fn sample(
     program.run(py, shots, seed, true, bit_packed)
 }
 
-/// Clifft-compatible postselected sampling with optional survivor records.
+/// Clifft-compatible postselected sampling, retaining survivor records by
+/// default. Set `keep_records=False` for explicit aggregate-only sampling.
 #[gen_stub_pyfunction(module = "ticit._core")]
 #[pyfunction]
-#[pyo3(signature = (program, shots, seed=None, keep_records=false, *, bit_packed=false))]
+#[pyo3(signature = (program, shots, seed=None, keep_records=true, *, bit_packed=false))]
 fn sample_survivors(
     py: Python<'_>,
     program: PyRef<'_, PyProgram>,

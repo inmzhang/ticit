@@ -435,6 +435,7 @@ struct BatchWorker {
 /// let result = sampler.sample_with_seed(100, 7, false)?;
 /// assert_eq!(result.counts.shots, 100);
 /// assert_eq!(result.counts.accepted, 100);
+/// assert_eq!(result.record_rows, 100);
 /// # Ok::<(), ticit::TicitError>(())
 /// ```
 pub struct Sampler {

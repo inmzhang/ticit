@@ -111,7 +111,7 @@ pub(crate) fn run(options: &Args) -> Result<()> {
     let mut active_threads = info.threads;
     for repeat in 0..options.repeats {
         let result = sampler
-            .sample_counts_with_seed(options.shots, repeat as u64)
+            .sample_with_seed(options.shots, repeat as u64, false)
             .context("sampling failed")?;
         counts.shots += result.counts.shots;
         counts.discarded += result.counts.discarded;
@@ -161,6 +161,7 @@ pub(crate) fn run(options: &Args) -> Result<()> {
     println!("batch_size {}", info.batch_size);
     println!("sample_chunk_shots {}", info.sample_chunk_shots);
     println!("repeats {}", options.repeats);
+    println!("keep_records true");
     println!("threads {active_threads}");
     if active_threads != options.threads {
         println!("requested_threads {}", options.threads);

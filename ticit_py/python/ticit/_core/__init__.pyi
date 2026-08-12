@@ -726,7 +726,8 @@ def sample(program: Program, shots: builtins.int, seed: typing.Optional[builtins
         (20, 20, 0)
     """
 
-def sample_survivors(program: Program, shots: builtins.int, seed: typing.Optional[builtins.int] = None, keep_records: builtins.bool = False, *, bit_packed: builtins.bool = False) -> SampleResult:
+def sample_survivors(program: Program, shots: builtins.int, seed: typing.Optional[builtins.int] = None, keep_records: builtins.bool = True, *, bit_packed: builtins.bool = False) -> SampleResult:
     r"""
-    Clifft-compatible postselected sampling with optional survivor records.
+    Clifft-compatible postselected sampling, retaining survivor records by
+    default. Set `keep_records=False` for explicit aggregate-only sampling.
     """

@@ -115,6 +115,13 @@ pub struct GpuOptions {
 
     /// Compute a noiseless reference on the CPU before GPU sampling.
     pub normalize_syndromes: bool,
+
+    /// Retain per-shot measurement, detector, observable, and expectation
+    /// records.
+    ///
+    /// This is the default for user-facing sampling. Set it to `false` only
+    /// for an explicitly requested aggregate-counter run.
+    pub keep_records: bool,
 }
 
 struct WideBuffers {
@@ -174,7 +181,7 @@ pub fn run(args: &GpuOptions) -> Result<()> {
         0,
         parse_s,
         Some(&args.circuit),
-        false,
+        args.keep_records,
         None,
         &reference.detectors,
         &reference.observables,
@@ -182,8 +189,7 @@ pub fn run(args: &GpuOptions) -> Result<()> {
     Ok(())
 }
 
-/// Samples a parsed circuit on CUDA and returns the same aggregate counters as
-/// the CPU [`crate::Sampler`].
+/// Samples a parsed circuit on CUDA, retaining per-shot records by default.
 ///
 /// Nonzero `postselection_mask` entries reject shots at the corresponding
 /// detectors. `observable` selects the observable index counted as a logical
@@ -205,6 +211,7 @@ pub fn run(args: &GpuOptions) -> Result<()> {
 ///     0,
 /// )?;
 /// assert_eq!(result.counts.shots, 1_000);
+/// assert_eq!(result.record_rows, 1_000);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -229,7 +236,7 @@ pub fn sample_circuit(
         observable,
         0.0,
         None,
-        false,
+        true,
         None,
         &[],
         &[],
@@ -265,24 +272,23 @@ pub fn sample_circuit_with_reference(
         observable,
         0.0,
         None,
-        false,
+        true,
         None,
         expected_detectors,
         expected_observables,
     )
 }
 
-/// Samples a parsed circuit on CUDA and retains row-major detector outcomes
-/// and expectation values for every shot.
+/// Samples a parsed circuit on CUDA and retains row-major measurement,
+/// detector, observable, and expectation rows for every accepted shot.
 ///
 /// When `exact_k` is set, all ordinary Bernoulli sources are conditioned on
-/// exactly that many faults. Record capture currently requires a circuit with
-/// no active detector postselection.
+/// exactly that many faults.
 ///
 /// # Errors
 ///
-/// Returns an error under the same conditions as [`sample_circuit`], when the
-/// exact-k source plan is unsupported, or when postselection is active.
+/// Returns an error under the same conditions as [`sample_circuit`], or when
+/// the exact-k source plan is unsupported.
 pub fn sample_circuit_records(
     circuit: &Circuit,
     shots: u64,
@@ -320,17 +326,101 @@ pub fn sample_circuit_records_with_reference(
     expected_detectors: &[u8],
     expected_observables: &[u8],
 ) -> Result<SampleResult> {
-    sample_circuit_impl(
+    sample_circuit_records_with_reference_and_postselection(
         circuit,
         shots,
         seed,
         chunk_shots,
         &[],
         observable,
+        exact_k,
+        expected_detectors,
+        expected_observables,
+    )
+}
+
+/// Retains GPU records with exact-k conditioning, detector postselection, and
+/// optional reference normalization.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_records_with_reference_and_postselection(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    exact_k: Option<usize>,
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
+    sample_circuit_impl(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
         0.0,
         None,
         true,
         exact_k,
+        expected_detectors,
+        expected_observables,
+    )
+}
+
+/// Samples a parsed circuit on CUDA and returns aggregate counters only.
+///
+/// This is the explicit opt-in fast path. Unlike [`sample_circuit`], it does
+/// not materialize measurement, detector, observable, or expectation rows.
+pub fn sample_circuit_counts(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+) -> Result<SampleResult> {
+    sample_circuit_impl(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        0.0,
+        None,
+        false,
+        None,
+        &[],
+        &[],
+    )
+}
+
+/// Aggregate-only CUDA sampling with explicit detector and observable
+/// reference vectors.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_counts_with_reference(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
+    sample_circuit_impl(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        0.0,
+        None,
+        false,
+        None,
         expected_detectors,
         expected_observables,
     )
@@ -377,9 +467,6 @@ fn sample_circuit_impl(
     if let Some(k) = exact_k {
         condition_exact_k(&mut program, k)?;
     }
-    if keep_records && has_postselection(&program) {
-        bail!("GPU record capture does not support active detector postselection");
-    }
     let logical_records = logical_records_for_observable(&parsed.observables, observable);
     let input = make_circuit_sampling_input(
         program,
@@ -388,9 +475,18 @@ fn sample_circuit_impl(
         parsed.observable_count(),
         SamplingTiming::default(),
     );
-    let mut gpu_plan = plan::GpuPlan::build(&input.program, &input.logical_records)
+    let mut gpu_plan = plan::GpuPlan::build(&input.program, &input.logical_records, keep_records)
         .context("failed to lower the GPU plan")?;
     apply_detector_reference(&mut gpu_plan, expected_detectors);
+    let postselect_detectors: Vec<usize> = gpu_plan
+        .instructions
+        .iter()
+        .filter_map(|instruction| {
+            (instruction.opcode == plan::OP_DETECTOR && instruction.diagonal_phase)
+                .then_some(instruction.detector)
+                .flatten()
+        })
+        .collect();
     // Detector postselection is carried by each `OP_DETECTOR`'s own postselect
     // bit, which planning derives from `postselection_mask`, so every kernel
     // runs the whole instruction stream.
@@ -448,6 +544,8 @@ fn sample_circuit_impl(
         let rows = usize::try_from(shots).context("GPU record row count exceeds usize")?;
         rows.checked_mul(input.program.ndetectors)
             .context("GPU detector output is too large")?;
+        rows.checked_mul(input.program.nrecords)
+            .context("GPU measurement output is too large")?;
         rows.checked_mul(input.program.nexpvals)
             .context("GPU expectation output is too large")?;
     }
@@ -516,21 +614,42 @@ fn sample_circuit_impl(
     let block_counts: Arc<Tensor<u64>> =
         Arc::new(cutile::api::zeros(&[max_sample_blocks * 2]).sync_on(&stream)?);
     let expectations: Arc<Tensor<f32>> = Arc::new(
-        cutile::api::zeros(&[input
-            .program
-            .nexpvals
-            .max(1)
-            .checked_mul(max_chunk)
-            .context("GPU expectation buffer is too large")?])
+        cutile::api::zeros(&[if keep_records {
+            input
+                .program
+                .nexpvals
+                .max(1)
+                .checked_mul(max_chunk)
+                .context("GPU expectation buffer is too large")?
+        } else {
+            1
+        }])
         .sync_on(&stream)?,
     );
     let detector_values: Arc<Tensor<u64>> = Arc::new(
-        cutile::api::zeros(&[input
-            .program
-            .ndetectors
-            .max(1)
-            .checked_mul(max_chunk)
-            .context("GPU detector buffer is too large")?])
+        cutile::api::zeros(&[if keep_records {
+            input
+                .program
+                .ndetectors
+                .max(1)
+                .checked_mul(max_chunk)
+                .context("GPU detector buffer is too large")?
+        } else {
+            1
+        }])
+        .sync_on(&stream)?,
+    );
+    let measurement_values: Arc<Tensor<u64>> = Arc::new(
+        cutile::api::zeros(&[if keep_records {
+            input
+                .program
+                .nrecords
+                .max(1)
+                .checked_mul(max_chunk)
+                .context("GPU measurement buffer is too large")?
+        } else {
+            1
+        }])
         .sync_on(&stream)?,
     );
     let count_partials: Arc<Tensor<u64>> = Arc::new(
@@ -566,15 +685,15 @@ fn sample_circuit_impl(
         stream.synchronize()?;
     }
     let rng_setup_s = rng_setup_start.elapsed().as_secs_f64();
-    let (metadata, parameters, controls, expectation_indices) = gpu_plan.encode();
+    let (metadata, parameters, controls, output_indices) = gpu_plan.encode();
     let metadata: Tensor<u64> =
         cutile::api::copy_host_vec_to_device(&Arc::new(metadata)).sync_on(&stream)?;
     let parameters: Tensor<f32> =
         cutile::api::copy_host_vec_to_device(&Arc::new(parameters)).sync_on(&stream)?;
     let controls: Tensor<i32> =
         cutile::api::copy_host_vec_to_device(&Arc::new(controls)).sync_on(&stream)?;
-    let expectation_indices: Tensor<i32> =
-        cutile::api::copy_host_vec_to_device(&Arc::new(expectation_indices)).sync_on(&stream)?;
+    let output_indices: Tensor<i32> =
+        cutile::api::copy_host_vec_to_device(&Arc::new(output_indices)).sync_on(&stream)?;
 
     let exogenous = &gpu_plan.exogenous_plan;
     let constant_masks: Tensor<u64> =
@@ -624,9 +743,21 @@ fn sample_circuit_impl(
 
     let mut discarded = 0u64;
     let mut logical_errors = 0u64;
-    let record_rows = if keep_records { shots as usize } else { 0 };
-    let mut recorded_detectors = Vec::with_capacity(record_rows * input.program.ndetectors);
-    let mut recorded_expectations = Vec::with_capacity(record_rows * input.program.nexpvals);
+    let mut record_rows = if keep_records {
+        usize::try_from(shots).context("GPU record row count exceeds usize")?
+    } else {
+        0
+    };
+    let record_capacity = |columns: usize| {
+        record_rows
+            .checked_mul(columns)
+            .context("GPU host record output is too large")
+    };
+    let mut recorded_measurements = Vec::with_capacity(record_capacity(input.program.nrecords)?);
+    let mut recorded_detectors = Vec::with_capacity(record_capacity(input.program.ndetectors)?);
+    let mut recorded_observables = Vec::with_capacity(record_capacity(parsed.observable_count())?);
+    let mut recorded_expectations = Vec::with_capacity(record_capacity(input.program.nexpvals)?);
+    let mut observable_ones = vec![0u64; parsed.observable_count()];
     let mut warmup_s = 0.0;
     let mut exogenous_rng_s = 0.0;
     let mut exogenous_kernel_s = 0.0;
@@ -873,11 +1004,12 @@ fn sample_circuit_impl(
                     block_counts.device_pointer(),
                     metadata.device_pointer(),
                     controls.device_pointer(),
-                    expectation_indices.device_pointer(),
+                    output_indices.device_pointer(),
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
                     expectations.device_pointer(),
                     detector_values.device_pointer(),
+                    measurement_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
@@ -900,11 +1032,12 @@ fn sample_circuit_impl(
                     block_counts.device_pointer(),
                     metadata.device_pointer(),
                     controls.device_pointer(),
-                    expectation_indices.device_pointer(),
+                    output_indices.device_pointer(),
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
                     expectations.device_pointer(),
                     detector_values.device_pointer(),
+                    measurement_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
@@ -926,11 +1059,12 @@ fn sample_circuit_impl(
                     block_counts.device_pointer(),
                     metadata.device_pointer(),
                     controls.device_pointer(),
-                    expectation_indices.device_pointer(),
+                    output_indices.device_pointer(),
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
                     expectations.device_pointer(),
                     detector_values.device_pointer(),
+                    measurement_values.device_pointer(),
                     branch_randoms.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
@@ -1107,6 +1241,9 @@ fn sample_circuit_impl(
 
         let copy_start = Instant::now();
         let count_partials = (&count_partials).to_host_vec().sync_on(&stream)?;
+        let measurement_chunk = keep_records
+            .then(|| (&measurement_values).to_host_vec().sync_on(&stream))
+            .transpose()?;
         let detector_chunk = keep_records
             .then(|| (&detector_values).to_host_vec().sync_on(&stream))
             .transpose()?;
@@ -1131,12 +1268,36 @@ fn sample_circuit_impl(
             chunk_logical_errors,
             expected_logical,
         );
-        if let (Some(detector_chunk), Some(expectation_chunk)) = (detector_chunk, expectation_chunk)
+        if let (Some(measurement_chunk), Some(detector_chunk), Some(expectation_chunk)) =
+            (measurement_chunk, detector_chunk, expectation_chunk)
         {
             for shot in 0..chunk {
+                let rejected = postselect_detectors
+                    .iter()
+                    .any(|&detector| detector_chunk[detector * chunk + shot] != 0);
+                if rejected {
+                    continue;
+                }
+                for record in 0..input.program.nrecords {
+                    recorded_measurements.push(measurement_chunk[record * chunk + shot] as u8);
+                }
                 for detector in 0..input.program.ndetectors {
                     recorded_detectors.push(detector_chunk[detector * chunk + shot] as u8);
                 }
+                let mut observables = vec![0u8; parsed.observable_count()];
+                for include in &parsed.observables {
+                    let value = include.records.iter().fold(0u8, |value, &record| {
+                        value ^ (measurement_chunk[(record - 1) * chunk + shot] as u8 & 1)
+                    });
+                    observables[include.index] ^= value;
+                }
+                for (index, value) in observables.iter_mut().enumerate() {
+                    *value ^= expected_observables.get(index).copied().unwrap_or(0) & 1;
+                }
+                for (ones, &value) in observable_ones.iter_mut().zip(&observables) {
+                    *ones += u64::from(value != 0);
+                }
+                recorded_observables.extend(observables);
                 for expectation in 0..input.program.nexpvals {
                     recorded_expectations
                         .push(expectation_chunk[expectation * chunk + shot] as f64);
@@ -1146,6 +1307,12 @@ fn sample_circuit_impl(
     }
 
     let accepted = shots - discarded;
+    if keep_records {
+        record_rows = usize::try_from(accepted).context("GPU accepted row count exceeds usize")?;
+        if let Some(&count) = observable_ones.get(observable) {
+            logical_errors = count;
+        }
+    }
     let sample_s = sample_start.elapsed().as_secs_f64() - warmup_s;
     if let Some(report_path) = report_path {
         println!("sampler cutile");
@@ -1232,6 +1399,22 @@ fn sample_circuit_impl(
             instruction_count(plan::OP_DORMANT_BRANCH),
             instruction_count(plan::OP_DETECTOR),
         );
+        println!(
+            "record_capture keep_records={} measurement_records={} detector_records={} observable_includes={} expectation_records={} record_ops={}",
+            keep_records,
+            input.program.nrecords,
+            input.program.ndetectors,
+            parsed.observable_count(),
+            input.program.nexpvals,
+            instruction_count(plan::OP_RECORD)
+                + gpu_plan
+                    .instructions
+                    .iter()
+                    .filter(|instruction| {
+                        instruction.record.is_some() && instruction.opcode != plan::OP_RECORD
+                    })
+                    .count(),
+        );
         println!("adaptive_branches {}", gpu_plan.branch_count);
         println!(
             "exogenous_sources dense_draws={} dense_groups={} sparse_groups={} sparse_sets={} categorical={} rare={} bernoulli={} low_probability={} expression_rows={} mask_words={} dense_transitions={}",
@@ -1258,6 +1441,7 @@ fn sample_circuit_impl(
             gpu_plan.exogenous_plan.transition_upper.len(),
         );
         println!("shots {shots}");
+        println!("keep_records {keep_records}");
         println!("discarded {discarded}");
         println!("accepted {accepted}");
         println!("logical_errors {logical_errors}");
@@ -1280,8 +1464,7 @@ fn sample_circuit_impl(
         );
         println!("sample_s {sample_s}");
     }
-    let mut observable_ones = vec![0; parsed.observable_count()];
-    if let Some(count) = observable_ones.get_mut(observable) {
+    if !keep_records && let Some(count) = observable_ones.get_mut(observable) {
         *count = logical_errors;
     }
     Ok(SampleResult {
@@ -1299,7 +1482,9 @@ fn sample_circuit_impl(
         },
         active_threads: 1,
         record_rows,
+        measurements: recorded_measurements,
         detectors: recorded_detectors,
+        observables: recorded_observables,
         exp_vals: recorded_expectations,
         observable_ones,
         ..Default::default()
@@ -1314,7 +1499,7 @@ mod tests {
     fn gpu_reduction_applies_cpu_reference_bits() {
         let circuit = Circuit::from_text("X 0\nM 0\nDETECTOR rec[-1]\n").expect("parses");
         let program = plan_circuit(&circuit, &[1]).expect("plans");
-        let mut gpu_plan = plan::GpuPlan::build(&program, &[]).expect("lowers");
+        let mut gpu_plan = plan::GpuPlan::build(&program, &[], false).expect("lowers");
         apply_detector_reference(&mut gpu_plan, &[1]);
         let detector = gpu_plan
             .instructions

@@ -24,6 +24,8 @@ pub const OP_DORMANT_BRANCH: u64 = 3;
 pub const OP_DETECTOR: u64 = 4;
 pub const OP_EXPECTATION_RECORD: u64 = 5;
 pub const OP_EXPECTATION_ACTIVE: u64 = 6;
+/// Materialize a symbolic measurement record when record capture is enabled.
+pub const OP_RECORD: u64 = 7;
 
 #[derive(Clone, Debug)]
 pub struct GpuExpression {
@@ -41,6 +43,7 @@ pub struct GpuInstruction {
     pub diagonal_phase: bool,
     pub z_without_pivot: u64,
     pub branch: Option<usize>,
+    pub record: Option<usize>,
     pub expectation: Option<usize>,
     pub detector: Option<usize>,
     pub params: [f32; PARAM_WORDS],
@@ -159,6 +162,7 @@ impl GpuPlan {
     pub fn build(
         program: &FactoredInstructionProgram,
         logical_records: &[Vec<i32>],
+        keep_records: bool,
     ) -> Result<Self> {
         ensure!(
             program.max_k <= MAX_GPU_K,
@@ -251,6 +255,7 @@ impl GpuPlan {
                         diagonal_phase: false,
                         z_without_pivot: 0,
                         branch: None,
+                        record: None,
                         expectation: None,
                         detector: None,
                         params: [
@@ -283,6 +288,7 @@ impl GpuPlan {
                         diagonal_phase: false,
                         z_without_pivot: 0,
                         branch: None,
+                        record: None,
                         expectation: None,
                         detector: None,
                         params: [
@@ -307,6 +313,7 @@ impl GpuPlan {
                             diagonal_phase: false,
                             z_without_pivot: 0,
                             branch: None,
+                            record: None,
                             expectation: Some(exp_val as usize),
                             detector: None,
                             params: [0.0; PARAM_WORDS],
@@ -314,6 +321,23 @@ impl GpuPlan {
                     } else {
                         assign_record(&mut records, inst.record, &outcome)?;
                         assign_definition(&mut definitions, inst.record_condition, &outcome)?;
+                        if keep_records && let Some(record) = inst.record {
+                            expressions.push(outcome);
+                            instructions.push(GpuInstruction {
+                                opcode: OP_RECORD,
+                                expression: placeholder_expression(),
+                                xmask: 0,
+                                zmask: 0,
+                                pivot: 0,
+                                diagonal_phase: false,
+                                z_without_pivot: 0,
+                                branch: None,
+                                record: gpu_record_index(Some(record))?,
+                                expectation: None,
+                                detector: None,
+                                params: [0.0; PARAM_WORDS],
+                            });
+                        }
                     }
                 }
                 FactoredInstruction::RecordDetector(inst) => {
@@ -332,6 +356,7 @@ impl GpuPlan {
                         diagonal_phase: inst.postselect,
                         z_without_pivot: 0,
                         branch: None,
+                        record: None,
                         expectation: None,
                         detector: Some((inst.detector - 1) as usize),
                         params: [0.0; PARAM_WORDS],
@@ -398,6 +423,10 @@ impl GpuPlan {
                         diagonal_phase: kernel.diagonal_phase_bit != 0,
                         z_without_pivot,
                         branch,
+                        record: keep_records
+                            .then(|| gpu_record_index(inst.record))
+                            .transpose()?
+                            .flatten(),
                         expectation,
                         detector: None,
                         params: [
@@ -441,6 +470,26 @@ impl GpuPlan {
                                 diagonal_phase: false,
                                 z_without_pivot: 0,
                                 branch: Some(branch),
+                                record: keep_records
+                                    .then(|| gpu_record_index(inst.record))
+                                    .transpose()?
+                                    .flatten(),
+                                expectation: None,
+                                detector: None,
+                                params: [0.0; PARAM_WORDS],
+                            });
+                        } else if keep_records && let Some(record) = inst.record {
+                            expressions.push(outcome);
+                            instructions.push(GpuInstruction {
+                                opcode: OP_RECORD,
+                                expression: placeholder_expression(),
+                                xmask: 0,
+                                zmask: 0,
+                                pivot: 0,
+                                diagonal_phase: false,
+                                z_without_pivot: 0,
+                                branch: None,
+                                record: gpu_record_index(Some(record))?,
                                 expectation: None,
                                 detector: None,
                                 params: [0.0; PARAM_WORDS],
@@ -505,7 +554,10 @@ impl GpuPlan {
         let mut metadata = Vec::with_capacity(self.instructions.len() * META_WORDS);
         let mut parameters = Vec::with_capacity(self.instructions.len() * PARAM_WORDS);
         let mut controls = Vec::with_capacity(self.instructions.len() * CONTROL_WORDS);
-        let mut expectations = Vec::with_capacity(self.instructions.len());
+        // One index stream serves all host-visible outputs. It is deliberately
+        // populated for records and detectors too; older code treated this as
+        // expectation-only metadata and silently dropped raw measurements.
+        let mut output_indices = Vec::with_capacity(self.instructions.len());
         for instruction in &self.instructions {
             let branch_or_expression = instruction
                 .branch
@@ -538,14 +590,14 @@ impl GpuPlan {
                         slot as i32
                     }),
             );
-            expectations.push(
+            output_indices.push(
                 instruction
-                    .expectation
-                    .or(instruction.detector)
+                    .record
+                    .or(instruction.expectation.or(instruction.detector))
                     .map_or(-1, |index| index as i32),
             );
         }
-        (metadata, parameters, controls, expectations)
+        (metadata, parameters, controls, output_indices)
     }
 }
 
@@ -1050,6 +1102,15 @@ fn assign_record(
     Ok(())
 }
 
+fn gpu_record_index(record: Option<i32>) -> Result<Option<usize>> {
+    record
+        .map(|record| {
+            ensure!(record > 0, "negative or zero GPU record index");
+            Ok((record - 1) as usize)
+        })
+        .transpose()
+}
+
 fn records_expression(records: &[Option<SymbolicBool>], ids: &[i32]) -> Result<SymbolicBool> {
     let mut expression = SymbolicBool::default();
     for &record in ids {
@@ -1135,6 +1196,7 @@ mod tests {
             diagonal_phase: false,
             z_without_pivot: 0,
             branch: None,
+            record: None,
             expectation: None,
             detector: None,
             params: [0.0; PARAM_WORDS],
@@ -1194,7 +1256,7 @@ mod tests {
         program.nrecords = 1;
         program.ndetectors = 1;
 
-        let plan = GpuPlan::build(&program, &[vec![1]]).expect("GPU plan");
+        let plan = GpuPlan::build(&program, &[vec![1]], false).expect("GPU plan");
         assert_eq!(plan.branch_count, 1);
         assert_eq!(plan.instructions.len(), 2);
         assert_eq!(plan.instructions[1].opcode, OP_DETECTOR);
@@ -1228,7 +1290,7 @@ mod tests {
             )
             .expect("valid test program");
 
-            let plan = GpuPlan::build(&program, &[]).expect("GPU plan");
+            let plan = GpuPlan::build(&program, &[], true).expect("GPU plan");
             assert_eq!(plan.instructions[0].diagonal_phase, postselect);
         }
     }
@@ -1254,7 +1316,7 @@ mod tests {
             FactoredInstructionProgram::new(1, 0, instructions, 0).expect("valid test program");
         let logical_records = vec![(1..=MAX_BRANCHES as i32 + 1).collect()];
 
-        let plan = GpuPlan::build(&program, &logical_records).expect("GPU plan");
+        let plan = GpuPlan::build(&program, &logical_records, false).expect("GPU plan");
 
         assert_eq!(plan.branch_count, 0);
         assert!(plan.instructions.is_empty());
@@ -1271,11 +1333,50 @@ mod tests {
             FactoredInstructionProgram::new(1, 0, instructions, 0).expect("valid test program");
 
         assert_eq!(program.nexpvals, 1);
-        let plan = GpuPlan::build(&program, &[]).expect("GPU counts plan");
+        let plan = GpuPlan::build(&program, &[], false).expect("GPU counts plan");
         assert_eq!(plan.instructions.len(), 1);
         assert_eq!(plan.instructions[0].opcode, OP_EXPECTATION_RECORD);
         assert_eq!(plan.instructions[0].expectation, Some(0));
         assert_eq!(plan.branch_count, 0);
+    }
+
+    #[test]
+    fn record_mode_keeps_measurement_record_work() {
+        let circuit =
+            Circuit::from_text("H 0\nM 0\nDETECTOR rec[-1]\nOBSERVABLE_INCLUDE(0) rec[-1]\n")
+                .expect("parses");
+        let program = plan_circuit(&circuit, &[]).expect("plans");
+        let logical = logical_records_for_observable(&circuit.observables, 0);
+        let counts_plan = GpuPlan::build(&program, &logical, false).expect("count plan");
+        let records_plan = GpuPlan::build(&program, &logical, true).expect("record plan");
+
+        assert!(
+            counts_plan
+                .instructions
+                .iter()
+                .all(|instruction| instruction.record.is_none())
+        );
+        assert!(
+            records_plan
+                .instructions
+                .iter()
+                .any(|instruction| instruction.record == Some(0))
+        );
+        assert!(records_plan.instructions.len() >= counts_plan.instructions.len());
+        let (_, _, _, output_indices) = records_plan.encode();
+        assert!(output_indices.contains(&0));
+        assert!(
+            counts_plan
+                .instructions
+                .iter()
+                .any(|instruction| instruction.opcode == OP_DETECTOR)
+        );
+        assert!(
+            records_plan
+                .instructions
+                .iter()
+                .any(|instruction| instruction.opcode == OP_DETECTOR)
+        );
     }
 
     #[test]
@@ -1402,7 +1503,7 @@ mod tests {
         let parsed = Circuit::from_file(&path).expect("parse fixture");
         let program = plan_circuit(&parsed, &[]).expect("plan fixture");
         let logical = logical_records_for_observable(&parsed.observables, 0);
-        let plan = GpuPlan::build(&program, &logical).expect("GPU plan");
+        let plan = GpuPlan::build(&program, &logical, true).expect("GPU plan");
 
         assert_eq!(plan.exogenous_plan.constant_masks, [0]);
         assert_eq!(plan.exogenous_plan.draw_transition_offsets, [0]);
@@ -1417,7 +1518,7 @@ mod tests {
         let parsed = Circuit::from_file(&path).expect("parse fixture");
         let program = plan_circuit(&parsed, &[]).expect("plan fixture");
         let logical = logical_records_for_observable(&parsed.observables, 0);
-        let plan = GpuPlan::build(&program, &logical).expect("wide GPU plan");
+        let plan = GpuPlan::build(&program, &logical, false).expect("wide GPU plan");
 
         assert_eq!(program.max_k, 13);
         assert!(plan.instructions.iter().all(|instruction| {

@@ -47,9 +47,19 @@ struct Cli {
     #[arg(long)]
     normalize_syndromes: bool,
 
-    /// Write per-shot detector and expectation rows using this path prefix.
-    #[arg(long)]
+    /// Write per-shot measurement, detector, observable, and expectation rows
+    /// using this path prefix.
+    #[arg(long, conflicts_with = "count_only")]
     records_out: Option<PathBuf>,
+
+    /// Skip per-shot record retention and return aggregate counters only.
+    ///
+    /// Record retention is the default, including when no `--records-out`
+    /// path is supplied. This switch is intentionally explicit because
+    /// count-only sampling changes the timed work and is not comparable to a
+    /// record-producing run.
+    #[arg(long, conflicts_with = "records_out")]
+    count_only: bool,
 
     /// Condition all ordinary Bernoulli sources on exactly this many faults.
     #[arg(long, requires = "records_out", value_delimiter = ',')]
@@ -80,10 +90,10 @@ fn run_cpu(args: &Cli) -> Result<()> {
     if !args.exact_k.is_empty() {
         anyhow::bail!("--exact-k currently requires the GPU backend");
     }
-    let result = if args.records_out.is_some() {
-        sampler.sample_with_seed(args.shots, args.seed, false)
-    } else {
+    let result = if args.count_only {
         sampler.sample_counts_with_seed(args.shots, args.seed)
+    } else {
+        sampler.sample_with_seed(args.shots, args.seed, false)
     }
     .context("sampling failed")?;
     if let Some(path) = &args.records_out {
@@ -99,6 +109,7 @@ fn run_cpu(args: &Cli) -> Result<()> {
     println!("discarded {}", counts.discarded);
     println!("accepted {}", counts.accepted);
     println!("logical_errors {}", counts.logical_errors);
+    println!("keep_records {}", !args.count_only);
     println!("discard_rate {}", rate(counts.discard_rate()));
     println!("logical_error_rate {}", rate(counts.logical_error_rate()));
     Ok(())
@@ -107,9 +118,6 @@ fn run_cpu(args: &Cli) -> Result<()> {
 #[cfg(feature = "gpu")]
 fn run_gpu(args: &Cli) -> Result<()> {
     if let Some(path) = &args.records_out {
-        if !args.postselection_mask.is_empty() {
-            anyhow::bail!("--postselection-mask cannot be combined with --records-out");
-        }
         let circuit = Circuit::from_file(&args.circuit)
             .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
         let reference = if args.normalize_syndromes {
@@ -123,11 +131,12 @@ fn run_gpu(args: &Cli) -> Result<()> {
             args.exact_k.iter().copied().map(Some).collect()
         };
         for exact_k in exact_ks {
-            let result = ticit::gpu::sample_circuit_records_with_reference(
+            let result = ticit::gpu::sample_circuit_records_with_reference_and_postselection(
                 &circuit,
                 args.shots,
                 args.seed,
                 args.chunk_shots,
+                &args.postselection_mask,
                 0,
                 exact_k,
                 &reference.detectors,
@@ -141,6 +150,7 @@ fn run_gpu(args: &Cli) -> Result<()> {
             println!("discarded {}", result.counts.discarded);
             println!("accepted {}", result.counts.accepted);
             println!("logical_errors {}", result.counts.logical_errors);
+            println!("keep_records true");
             println!("compile_s {}", result.timing.compile_s);
             println!("sample_s {}", result.timing.sample_s);
         }
@@ -153,6 +163,7 @@ fn run_gpu(args: &Cli) -> Result<()> {
         chunk_shots: args.chunk_shots,
         postselection_mask: args.postselection_mask.clone(),
         normalize_syndromes: args.normalize_syndromes,
+        keep_records: !args.count_only,
     })
 }
 
@@ -167,7 +178,12 @@ fn write_records(
     circuit: &Circuit,
     result: &ticit::SampleResult,
 ) -> Result<()> {
+    std::fs::write(
+        suffixed_path(path, ".measurements.u8"),
+        &result.measurements,
+    )?;
     std::fs::write(suffixed_path(path, ".detectors.u8"), &result.detectors)?;
+    std::fs::write(suffixed_path(path, ".observables.u8"), &result.observables)?;
     let mut output = BufWriter::new(File::create(suffixed_path(path, ".exp_vals.f64"))?);
     for values in result.exp_vals.chunks(8192) {
         let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
@@ -180,9 +196,11 @@ fn write_records(
     std::fs::write(
         suffixed_path(path, ".meta"),
         format!(
-            "rows {}\ndetectors {}\nexpectations {}\nlayout row-major\nf64 little-endian\n",
+            "rows {}\nmeasurements {}\ndetectors {}\nobservables {}\nexpectations {}\nlayout row-major\nf64 little-endian\n",
             result.record_rows,
+            circuit.measurement_record_count(),
             circuit.detector_count(),
+            circuit.observable_count(),
             circuit.expectation_value_count(),
         ),
     )?;
@@ -210,10 +228,25 @@ mod tests {
     fn backend_is_choosable() {
         let cpu = Cli::try_parse_from(["ticit", "circuit.ticit"]).expect("CPU CLI parses");
         assert_eq!(cpu.backend, Backend::Cpu);
+        assert!(!cpu.count_only, "record retention must be the CLI default");
         let gpu = Cli::try_parse_from(["ticit", "circuit.ticit", "--backend", "gpu"])
             .expect("GPU CLI parses");
         assert_eq!(gpu.backend, Backend::Gpu);
+        assert!(!gpu.count_only);
+        let count_only = Cli::try_parse_from(["ticit", "circuit.ticit", "--count-only"])
+            .expect("explicit count-only mode parses");
+        assert!(count_only.count_only);
         assert!(Cli::try_parse_from(["ticit", "circuit.ticit", "--exact-k", "2"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "ticit",
+                "circuit.ticit",
+                "--records-out",
+                "rows",
+                "--count-only",
+            ])
+            .is_err()
+        );
         let exact = Cli::try_parse_from([
             "ticit",
             "circuit.ticit",
@@ -224,5 +257,17 @@ mod tests {
         ])
         .expect("exact-k list parses");
         assert_eq!(exact.exact_k, [0, 1, 2]);
+        let records_with_postselection = Cli::try_parse_from([
+            "ticit",
+            "circuit.ticit",
+            "--backend",
+            "gpu",
+            "--records-out",
+            "rows",
+            "--postselection-mask",
+            "1",
+        ])
+        .expect("record capture accepts postselection");
+        assert_eq!(records_with_postselection.postselection_mask, [1]);
     }
 }

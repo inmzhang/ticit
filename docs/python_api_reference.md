@@ -334,9 +334,9 @@ property bit_packed: bool
 [`Program.sample`](#ticitprogramsample) returns `passed_shots` rows. The three
 bit arrays can also be tuple-unpacked as
 `measurements, detectors, observables = result`, matching Clifft. Without
-packing, each bit occupies one byte. Count-only
-`sample_survivors(..., keep_records=False)` returns zero-row arrays with the
-requested packed or unpacked column count.
+packing, each bit occupies one byte. `sample_survivors` retains rows by
+default; passing `keep_records=False` explicitly returns zero-row arrays with
+the requested packed or unpacked column count.
 
 ### Count fields
 
@@ -747,15 +747,16 @@ def ticit.sample_survivors(
     program: ticit.Program,
     shots: int,
     seed: int | None = None,
-    keep_records: bool = False,
+    keep_records: bool = True,
     *,
     bit_packed: bool = False,
 ) -> ticit.SampleResult
 ```
 
 A Clifft-compatible name for postselected sampling. Its counters are identical
-to `ticit.sample(program, shots, seed)`. `keep_records=True` returns survivor
-rows; `False` returns zero-row arrays and avoids record materialization.
+to `ticit.sample(program, shots, seed)`. It returns survivor rows by default;
+`keep_records=False` is the explicit aggregate-only mode and avoids record
+materialization.
 `bit_packed` has the same meaning as on
 [`Program.sample`](#ticitprogramsample).
 
@@ -776,8 +777,8 @@ Requirements and current limits:
 - A working CUDA environment supported by ticit's `cutile` backend is required.
 - GPU detector postselection uses the same per-detector `postselection_mask`
   as the CPU and Clifft APIs.
-- The GPU currently supports count-only sampling;
-  [`Program.sample`](#ticitprogramsample) raises
-  `RuntimeError` because GPU kernels do not yet return per-shot records.
+- GPU sampling retains measurement, detector, observable, and expectation rows
+  by default, just like CPU sampling. Set `keep_records=False` explicitly when
+  only aggregate counters are wanted.
 - GPU planning, device allocation, and one-time cuTile JIT warmup currently
   occur during the sampling call and are reported in `compile_s`.

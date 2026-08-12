@@ -2351,6 +2351,7 @@ mod kernels {
         expression_values: *mut u64,
         expectations: *mut f32,
         detectors: *mut u64,
+        measurements: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
         random_stride: i32,
@@ -2619,6 +2620,32 @@ mod kernels {
                 out_im = select(pivot_clear, out_im, zero_state);
                 re = out_re * invnorm;
                 im = out_im * invnorm;
+                let record = load_i32(expectation_indices, instruction);
+                if keep_records != 0i32 && record >= 0i32 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        random_stride,
+                        shot_start,
+                        lanes,
+                        live,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    store_u64_row(
+                        measurements,
+                        record,
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
             } else if opcode == 3u64 {
                 let branch_slot = load_u64(metadata, meta + 10i32);
                 let branch_bit = load_u64(metadata, meta + 11i32);
@@ -2637,6 +2664,32 @@ mod kernels {
                 } else {
                     branches3 = ori(branches3, branch_value);
                 }
+                let record = load_i32(expectation_indices, instruction);
+                if keep_records != 0i32 && record >= 0i32 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        random_stride,
+                        shot_start,
+                        lanes,
+                        live,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    store_u64_row(
+                        measurements,
+                        record,
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
             } else if opcode == 5u64 {
                 let sign = instruction_expression_rows(
                     metadata,
@@ -2652,15 +2705,17 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                store_f32_row(
-                    expectations,
-                    load_i32(expectation_indices, instruction),
-                    shots,
-                    shot_start,
-                    lanes,
-                    live,
-                    select(sign, zero_probability - one_probability, one_probability),
-                );
+                if keep_records != 0i32 {
+                    store_f32_row(
+                        expectations,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(sign, zero_probability - one_probability, one_probability),
+                    );
+                }
             } else if opcode == 6u64 {
                 let sign = instruction_expression_rows(
                     metadata,
@@ -2690,14 +2745,40 @@ mod kernels {
                 let expectation = select(sign, zero_probability - one_probability, one_probability)
                     * (one_probability
                         - broadcast_scalar(2.0f32, const_shape![1]) * probability_true);
-                store_f32_row(
-                    expectations,
+                if keep_records != 0i32 {
+                    store_f32_row(
+                        expectations,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        expectation,
+                    );
+                }
+            } else if opcode == 7u64 {
+                let outcome = instruction_expression_rows(
+                    metadata,
+                    controls,
+                    expression_values,
+                    random_stride,
+                    shot_start,
+                    lanes,
+                    live,
+                    instruction,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                );
+                store_u64_row(
+                    measurements,
                     load_i32(expectation_indices, instruction),
                     shots,
                     shot_start,
                     lanes,
                     live,
-                    expectation,
+                    select(outcome, one_shots, zero_shots),
                 );
             } else {
                 let raw_outcome = instruction_expression_rows(
@@ -2783,6 +2864,7 @@ mod kernels {
         expression_values: *mut u64,
         expectations: *mut f32,
         detectors: *mut u64,
+        measurements: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
         random_stride: i32,
@@ -3053,6 +3135,32 @@ mod kernels {
                 out_im = select(pivot_clear, out_im, zero_state);
                 re = out_re * invnorm;
                 im = out_im * invnorm;
+                let record = load_i32(expectation_indices, instruction);
+                if keep_records != 0i32 && record >= 0i32 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        random_stride,
+                        shot_start,
+                        lanes,
+                        live,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    store_u64_row(
+                        measurements,
+                        record,
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
             } else if opcode == 3u64 {
                 let branch_slot = load_u64(metadata, meta + 10i32);
                 let branch_bit = load_u64(metadata, meta + 11i32);
@@ -3071,6 +3179,32 @@ mod kernels {
                 } else {
                     branches3 = ori(branches3, branch_value);
                 }
+                let record = load_i32(expectation_indices, instruction);
+                if keep_records != 0i32 && record >= 0i32 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        random_stride,
+                        shot_start,
+                        lanes,
+                        live,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    store_u64_row(
+                        measurements,
+                        record,
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
             } else if opcode == 5u64 {
                 let sign = instruction_expression_rows(
                     metadata,
@@ -3086,15 +3220,17 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                store_f32_row(
-                    expectations,
-                    load_i32(expectation_indices, instruction),
-                    shots,
-                    shot_start,
-                    lanes,
-                    live,
-                    select(sign, zero_probability - one_probability, one_probability),
-                );
+                if keep_records != 0i32 {
+                    store_f32_row(
+                        expectations,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(sign, zero_probability - one_probability, one_probability),
+                    );
+                }
             } else if opcode == 6u64 {
                 let sign = instruction_expression_rows(
                     metadata,
@@ -3124,14 +3260,40 @@ mod kernels {
                 let expectation = select(sign, zero_probability - one_probability, one_probability)
                     * (one_probability
                         - broadcast_scalar(2.0f32, const_shape![1]) * probability_true);
-                store_f32_row(
-                    expectations,
+                if keep_records != 0i32 {
+                    store_f32_row(
+                        expectations,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        expectation,
+                    );
+                }
+            } else if opcode == 7u64 {
+                let outcome = instruction_expression_rows(
+                    metadata,
+                    controls,
+                    expression_values,
+                    random_stride,
+                    shot_start,
+                    lanes,
+                    live,
+                    instruction,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                );
+                store_u64_row(
+                    measurements,
                     load_i32(expectation_indices, instruction),
                     shots,
                     shot_start,
                     lanes,
                     live,
-                    expectation,
+                    select(outcome, one_shots, zero_shots),
                 );
             } else {
                 let raw_outcome = instruction_expression_rows(
@@ -3217,6 +3379,7 @@ mod kernels {
         expression_values: *mut u64,
         expectations: *mut f32,
         detectors: *mut u64,
+        measurements: *mut u64,
         randoms: *mut f32,
         instruction_count: i32,
         random_stride: i32,
@@ -3535,6 +3698,32 @@ mod kernels {
                 out_im = select(pivot_clear, out_im, zero_state);
                 re = out_re * invnorm;
                 im = out_im * invnorm;
+                let record = load_i32(expectation_indices, instruction);
+                if keep_records != 0i32 && record >= 0i32 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        random_stride,
+                        shot_start,
+                        lanes,
+                        live,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    store_u64_row(
+                        measurements,
+                        record,
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
             } else if opcode == 3u64 {
                 let branch_slot = load_u64(metadata, meta + 10i32);
                 let branch_bit = load_u64(metadata, meta + 11i32);
@@ -3553,6 +3742,32 @@ mod kernels {
                 } else {
                     branches3 = ori(branches3, branch_value);
                 }
+                let record = load_i32(expectation_indices, instruction);
+                if keep_records != 0i32 && record >= 0i32 {
+                    let outcome = instruction_expression_rows(
+                        metadata,
+                        controls,
+                        expression_values,
+                        random_stride,
+                        shot_start,
+                        lanes,
+                        live,
+                        instruction,
+                        branches0,
+                        branches1,
+                        branches2,
+                        branches3,
+                    );
+                    store_u64_row(
+                        measurements,
+                        record,
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(outcome, one_shots, zero_shots),
+                    );
+                }
             } else if opcode == 5u64 {
                 let sign = instruction_expression_rows(
                     metadata,
@@ -3568,15 +3783,17 @@ mod kernels {
                     branches2,
                     branches3,
                 );
-                store_f32_row(
-                    expectations,
-                    load_i32(expectation_indices, instruction),
-                    shots,
-                    shot_start,
-                    lanes,
-                    live,
-                    select(sign, zero_probability - one_probability, one_probability),
-                );
+                if keep_records != 0i32 {
+                    store_f32_row(
+                        expectations,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        select(sign, zero_probability - one_probability, one_probability),
+                    );
+                }
             } else if opcode == 6u64 {
                 let sign = instruction_expression_rows(
                     metadata,
@@ -3606,14 +3823,40 @@ mod kernels {
                 let expectation = select(sign, zero_probability - one_probability, one_probability)
                     * (one_probability
                         - broadcast_scalar(2.0f32, const_shape![1]) * probability_true);
-                store_f32_row(
-                    expectations,
+                if keep_records != 0i32 {
+                    store_f32_row(
+                        expectations,
+                        load_i32(expectation_indices, instruction),
+                        shots,
+                        shot_start,
+                        lanes,
+                        live,
+                        expectation,
+                    );
+                }
+            } else if opcode == 7u64 {
+                let outcome = instruction_expression_rows(
+                    metadata,
+                    controls,
+                    expression_values,
+                    random_stride,
+                    shot_start,
+                    lanes,
+                    live,
+                    instruction,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                );
+                store_u64_row(
+                    measurements,
                     load_i32(expectation_indices, instruction),
                     shots,
                     shot_start,
                     lanes,
                     live,
-                    expectation,
+                    select(outcome, one_shots, zero_shots),
                 );
             } else {
                 let raw_outcome = instruction_expression_rows(

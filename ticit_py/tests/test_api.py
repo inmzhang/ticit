@@ -42,11 +42,15 @@ def test_postselection_and_survivor_alias():
     assert result.detectors.shape == (0, 1)
     assert result.observables.shape == (0, 0)
 
-    counts_only = ticit.sample_survivors(ticit.Circuit("M 0").compile(), shots=32, seed=1)
-    assert counts_only.passed_shots == 32
+    records = ticit.sample_survivors(ticit.Circuit("M 0").compile(), shots=32, seed=1)
+    assert records.passed_shots == 32
+    assert records.measurements.shape == (32, 1)
+    assert records.detectors.shape == (32, 0)
+    assert records.observables.shape == (32, 0)
+    counts_only = ticit.sample_survivors(
+        ticit.Circuit("M 0").compile(), shots=32, seed=1, keep_records=False
+    )
     assert counts_only.measurements.shape == (0, 1)
-    assert counts_only.detectors.shape == (0, 0)
-    assert counts_only.observables.shape == (0, 0)
 
 
 def test_normalize_syndromes_uses_cpu_reference_sample():
@@ -80,7 +84,7 @@ def test_bit_packed_records_match_numpy_little_bit_order():
     assert result.observables.shape == (2, 0)
 
     counts_only = ticit.sample_survivors(
-        program, shots=2, seed=1, bit_packed=True
+        program, shots=2, seed=1, keep_records=False, bit_packed=True
     )
     assert counts_only.bit_packed
     assert counts_only.measurements.shape == (0, 2)

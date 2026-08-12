@@ -62,7 +62,8 @@ result = compiled_sampler.sample(shots=1_000, seed=42)
 
 ## Benchmarks
 
-See [ticit vs SymFT vs Clifft](docs/benchmark.md) for CPU and GPU results,
+See [ticit vs SymFT vs Clifft](docs/benchmark.md) for CPU results and the
+current GPU benchmark status,
 methodology, and caveats.
 
 ## AI acknowledgement
