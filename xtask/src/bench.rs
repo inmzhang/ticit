@@ -35,6 +35,10 @@ pub(crate) struct Args {
     #[arg(long, default_value = "1", value_parser = parse_threads)]
     threads: usize,
 
+    /// Skip per-shot record retention and return aggregate counters only.
+    #[arg(long)]
+    count_only: bool,
+
     /// Flat detector postselection flags, separated by commas.
     #[arg(long, value_delimiter = ',')]
     postselection_mask: Vec<u8>,
@@ -110,9 +114,12 @@ pub(crate) fn run(options: &Args) -> Result<()> {
     let mut timing = SamplingTiming::default();
     let mut active_threads = info.threads;
     for repeat in 0..options.repeats {
-        let result = sampler
-            .sample_with_seed(options.shots, repeat as u64, false)
-            .context("sampling failed")?;
+        let result = if options.count_only {
+            sampler.sample_counts_with_seed(options.shots, repeat as u64)
+        } else {
+            sampler.sample_with_seed(options.shots, repeat as u64, false)
+        }
+        .context("sampling failed")?;
         counts.shots += result.counts.shots;
         counts.discarded += result.counts.discarded;
         counts.accepted += result.counts.accepted;
@@ -161,7 +168,7 @@ pub(crate) fn run(options: &Args) -> Result<()> {
     println!("batch_size {}", info.batch_size);
     println!("sample_chunk_shots {}", info.sample_chunk_shots);
     println!("repeats {}", options.repeats);
-    println!("keep_records true");
+    println!("keep_records {}", !options.count_only);
     println!("threads {active_threads}");
     if active_threads != options.threads {
         println!("requested_threads {}", options.threads);
@@ -210,6 +217,7 @@ mod tests {
             "--batch-size=64",
             "--sample-chunk-shots=auto",
             "--threads=auto",
+            "--count-only",
             "--postselection-mask=1",
         ])
         .expect("flags parse")
@@ -219,6 +227,7 @@ mod tests {
         assert_eq!(options.batch_size, 64);
         assert_eq!(options.sample_chunk_shots, 0);
         assert_eq!(options.postselection_mask, [1]);
+        assert!(options.count_only);
         assert!(options.threads >= 1);
     }
 }
