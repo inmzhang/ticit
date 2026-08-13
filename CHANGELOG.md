@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/inmzhang/ticit/compare/v0.2.2...v0.2.3) - 2026-08-13
+
+### Added
+
+- *(gpu)* pin measurement parities
+- *(sampler)* pin measurement parities
+
+### Fixed
+
+- *(gpu)* default to retained records
+- *(ccz)* consolidate fixture and benchmark fixes
+
+### Other
+
+- *(deps)* apply dashboard updates
+
 ## [0.2.2](https://github.com/inmzhang/ticit/compare/v0.2.1...v0.2.2) - 2026-08-11
 
 ### Other
