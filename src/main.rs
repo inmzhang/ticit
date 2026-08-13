@@ -164,6 +164,7 @@ fn run_gpu(args: &Cli) -> Result<()> {
         postselection_mask: args.postselection_mask.clone(),
         normalize_syndromes: args.normalize_syndromes,
         keep_records: !args.count_only,
+        pin_measurements: Vec::new(),
     })
 }
 

@@ -5,13 +5,16 @@ use std::collections::HashMap;
 use crate::bits::{packed_bit, set_packed_bit};
 use crate::factored::{FactoredInstruction, FactoredInstructionProgram, RecordMeasurement};
 use crate::sampler::exogenous::exogenous_assigned_words;
+use crate::sampler::pinning::ForcedBranch;
 use crate::sampler::presampled_expression::{
     PresampledExpressionPlan, prepare_presampled_expression_plan_from_words,
 };
 use crate::symbolic::{SymbolicBool, symbolic_bool, xor_bool};
 use anyhow::{Result, bail, ensure};
 
-pub const META_WORDS: usize = 12;
+/// Instruction metadata: the original 12 words plus a force flag, constant,
+/// and four branch-XOR mask words.
+pub const META_WORDS: usize = 18;
 pub const PARAM_WORDS: usize = 4;
 pub const CONTROL_WORDS: usize = 1;
 pub const MAX_BRANCHES: usize = 256;
@@ -30,6 +33,12 @@ pub const OP_RECORD: u64 = 7;
 #[derive(Clone, Debug)]
 pub struct GpuExpression {
     pub block: usize,
+    pub branch_masks: [u64; 4],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GpuForcedBranch {
+    pub constant: bool,
     pub branch_masks: [u64; 4],
 }
 
@@ -52,6 +61,7 @@ pub struct GpuInstruction {
 #[derive(Clone, Debug)]
 pub struct GpuPlan {
     pub instructions: Vec<GpuInstruction>,
+    pub forced_branches: Vec<Option<GpuForcedBranch>>,
     pub logical: GpuExpression,
     pub expression_plan: PresampledExpressionPlan,
     pub exogenous_plan: GpuExogenousPlan,
@@ -159,10 +169,20 @@ fn mark_x_basis_rotation_runs(instructions: &mut [GpuInstruction]) {
 }
 
 impl GpuPlan {
+    #[allow(dead_code)]
     pub fn build(
         program: &FactoredInstructionProgram,
         logical_records: &[Vec<i32>],
         keep_records: bool,
+    ) -> Result<Self> {
+        Self::build_with_forced(program, logical_records, keep_records, &[])
+    }
+
+    pub fn build_with_forced(
+        program: &FactoredInstructionProgram,
+        logical_records: &[Vec<i32>],
+        keep_records: bool,
+        forced_branches: &[ForcedBranch],
     ) -> Result<Self> {
         ensure!(
             program.max_k <= MAX_GPU_K,
@@ -225,7 +245,8 @@ impl GpuPlan {
         let mut free_physical_bits: Vec<usize> = (program.initial_k..program.max_k).rev().collect();
         let mut active_k = program.initial_k;
 
-        for instruction in &program.instructions {
+        let mut forced_gpu_indices = HashMap::new();
+        for (source_index, instruction) in program.instructions.iter().enumerate() {
             match instruction {
                 FactoredInstruction::ApplyPrecomputedActivePauliRotation(inst) => {
                     let expression = expand(&inst.sign, &definitions)?;
@@ -437,6 +458,9 @@ impl GpuPlan {
                         ],
                     });
                     if expectation.is_none() {
+                        forced_gpu_indices.insert(source_index, instructions.len() - 1);
+                    }
+                    if expectation.is_none() {
                         active_k -= 1;
                         if resident {
                             physical_bits.remove(kernel.pivot);
@@ -478,6 +502,7 @@ impl GpuPlan {
                                 detector: None,
                                 params: [0.0; PARAM_WORDS],
                             });
+                            forced_gpu_indices.insert(source_index, instructions.len() - 1);
                         } else if keep_records && let Some(record) = inst.record {
                             expressions.push(outcome);
                             instructions.push(GpuInstruction {
@@ -541,8 +566,32 @@ impl GpuPlan {
         let exogenous_plan =
             GpuExogenousPlan::build(program, &expression_plan, &presampled_dormant_branches)?;
 
+        let mut compiled_forced = vec![None; instructions.len()];
+        for forced in forced_branches {
+            let gpu_index = forced_gpu_indices.get(&forced.instruction).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GPU pinning requires an adaptive branch at instruction {}",
+                    forced.instruction
+                )
+            })?;
+            let mut branch_masks = [0u64; 4];
+            for &condition in &forced.plan.conditions {
+                let slot = *branch_slots.get(&condition).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "GPU pinning branch condition {condition} is not retained as an adaptive branch"
+                    )
+                })?;
+                branch_masks[slot >> 6] ^= 1u64 << (slot & 63);
+            }
+            compiled_forced[*gpu_index] = Some(GpuForcedBranch {
+                constant: forced.plan.constant,
+                branch_masks,
+            });
+        }
+
         Ok(Self {
             instructions,
+            forced_branches: compiled_forced,
             logical,
             expression_plan,
             exogenous_plan,
@@ -558,7 +607,7 @@ impl GpuPlan {
         // populated for records and detectors too; older code treated this as
         // expectation-only metadata and silently dropped raw measurements.
         let mut output_indices = Vec::with_capacity(self.instructions.len());
-        for instruction in &self.instructions {
+        for (instruction_index, instruction) in self.instructions.iter().enumerate() {
             let branch_or_expression = instruction
                 .branch
                 .map_or((instruction.expression.block >> 6) as u64, |slot| {
@@ -568,6 +617,10 @@ impl GpuPlan {
                 || 1u64 << (instruction.expression.block & 63),
                 |slot| 1u64 << (slot & 63),
             );
+            let forced = self.forced_branches[instruction_index].as_ref();
+            let forced = forced.map_or(([0u64; 4], 0u64, 0u64), |forced| {
+                (forced.branch_masks, u64::from(forced.constant), 1)
+            });
             metadata.extend_from_slice(&[
                 instruction.opcode,
                 instruction.expression.branch_masks[0],
@@ -581,6 +634,12 @@ impl GpuPlan {
                 instruction.z_without_pivot,
                 branch_or_expression,
                 branch_bit,
+                forced.2,
+                forced.1,
+                forced.0[0],
+                forced.0[1],
+                forced.0[2],
+                forced.0[3],
             ]);
             parameters.extend_from_slice(&instruction.params);
             controls.push(
@@ -1176,6 +1235,7 @@ mod tests {
     use crate::factored::{
         BernoulliSampleGroup, IntroduceDormantMeasurementBranch, RecordDetector,
     };
+    use crate::sampler::pinning::{MeasurementParity, plan_pinned_measurements};
     use crate::sampler::prepared::logical_records_for_observable;
     use crate::symbolic::{SymbolicBoolEvaluationPlan, SymbolicCategoricalDistribution};
 
@@ -1183,6 +1243,27 @@ mod tests {
     fn active_masks_follow_physical_slots() {
         assert_eq!(remap_active_mask(0b101, &[2, 0, 3]).unwrap(), 0b1100);
         assert!(remap_active_mask(0b1000, &[2, 0, 3]).is_err());
+    }
+
+    #[test]
+    fn pinned_branch_is_encoded_as_a_branch_xor() {
+        let circuit = Circuit::from_text("H 0\nM 0\n").expect("circuit parses");
+        let program = plan_circuit(&circuit, &[]).expect("circuit plans");
+        let forced = plan_pinned_measurements(&program, &[MeasurementParity::new([0], true)])
+            .expect("pin plans");
+        let plan = GpuPlan::build_with_forced(&program, &[], false, &forced).expect("GPU plan");
+        let (metadata, _, _, _) = plan.encode();
+        let instruction = plan
+            .instructions
+            .iter()
+            .position(|instruction| {
+                instruction.opcode == OP_MEASURE || instruction.opcode == OP_DORMANT_BRANCH
+            })
+            .expect("measurement instruction");
+        let index = instruction * META_WORDS;
+        assert_eq!(metadata[index + 12], 1);
+        assert_eq!(metadata[index + 13], 1);
+        assert_eq!(metadata[index + 14], 0);
     }
 
     #[test]

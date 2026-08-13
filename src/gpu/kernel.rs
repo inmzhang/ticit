@@ -8,7 +8,7 @@ mod kernels {
     use cutile::core::*;
 
     const DIM: i32 = 16;
-    const META_WORDS: i32 = 12;
+    const META_WORDS: i32 = 18;
     const PARAM_WORDS: i32 = 4;
     const CONTROL_WORDS: i32 = 1;
     const DRAWS_PER_GROUP: i32 = 16;
@@ -257,6 +257,62 @@ mod kernels {
         value = parity_shot_step(value, 1u64);
         let one: Tile<u64, { [SHOTS] }> = constant(1u64, const_shape![SHOTS]);
         andi(value, one)
+    }
+
+    fn forced_branch<const SHOTS: i32>(
+        metadata: *mut u64,
+        meta: i32,
+        branches0: Tile<u64, { [SHOTS] }>,
+        branches1: Tile<u64, { [SHOTS] }>,
+        branches2: Tile<u64, { [SHOTS] }>,
+        branches3: Tile<u64, { [SHOTS] }>,
+        sampled: Tile<bool, { [SHOTS] }>,
+    ) -> Tile<bool, { [SHOTS] }> {
+        if load_u64(metadata, meta + 12i32) != 0u64 {
+            let mask0 = load_u64(metadata, meta + 14i32);
+            let mask1 = load_u64(metadata, meta + 15i32);
+            let mask2 = load_u64(metadata, meta + 16i32);
+            let mask3 = load_u64(metadata, meta + 17i32);
+            let selected = andi(branches0, broadcast_scalar(mask0, const_shape![SHOTS]))
+                ^ andi(branches1, broadcast_scalar(mask1, const_shape![SHOTS]))
+                ^ andi(branches2, broadcast_scalar(mask2, const_shape![SHOTS]))
+                ^ andi(branches3, broadcast_scalar(mask3, const_shape![SHOTS]));
+            let zero: Tile<u64, { [SHOTS] }> = constant(0u64, const_shape![SHOTS]);
+            let parity = ne_tile(parity_shots(selected), zero);
+            ne_tile(
+                parity,
+                broadcast_scalar(
+                    load_u64(metadata, meta + 13i32) != 0u64,
+                    const_shape![SHOTS],
+                ),
+            )
+        } else {
+            sampled
+        }
+    }
+
+    fn mark_invalid_pin<const SHOTS: i32>(
+        metadata: *mut u64,
+        meta: i32,
+        probability: Tile<f32, { [SHOTS] }>,
+        current: Tile<u64, { [SHOTS] }>,
+    ) -> Tile<u64, { [SHOTS] }> {
+        if load_u64(metadata, meta + 12i32) != 0u64 {
+            let low = lt_tile(
+                probability,
+                broadcast_scalar(0.499999f32, const_shape![SHOTS]),
+            );
+            let high = lt_tile(
+                broadcast_scalar(0.500001f32, const_shape![SHOTS]),
+                probability,
+            );
+            let one: Tile<u64, { [SHOTS] }> = constant(1u64, const_shape![SHOTS]);
+            let zero: Tile<u64, { [SHOTS] }> = constant(0u64, const_shape![SHOTS]);
+            let invalid = select(low, one, select(high, one, zero));
+            ori(current, invalid)
+        } else {
+            current
+        }
     }
 
     fn flip0(value: Tile<f32, { [64, 16] }>) -> Tile<f32, { [64, 16] }> {
@@ -1455,6 +1511,7 @@ mod kernels {
         state_im: *mut f32,
         branches: *mut u64,
         discarded: *mut u64,
+        invalid_pins: *mut u64,
         state_stride: i32,
         initial_dimension: i32,
         shots: i32,
@@ -1482,6 +1539,7 @@ mod kernels {
             store_u64(branches, word * shots + shot, zero_scalar);
         }
         store_u64(discarded, shot, zero_scalar);
+        store_u64(invalid_pins, shot, zero_scalar);
     }
 
     #[cutile::entry()]
@@ -1493,6 +1551,7 @@ mod kernels {
         output_im: *mut f32,
         branches: *mut u64,
         discarded: *mut u64,
+        invalid_pins: *mut u64,
         metadata: *mut u64,
         controls: *mut i32,
         parameters: *mut f32,
@@ -1832,9 +1891,20 @@ mod kernels {
                 );
                 let probability_true: Tile<f32, { [1] }> =
                     probability_true.reshape(const_shape![1]);
+                let invalid = load_u64_row(invalid_pins, 0i32, shots, shot, lanes1, live1);
+                let invalid = mark_invalid_pin(metadata, meta, probability_true, invalid);
+                store_u64_row(invalid_pins, 0i32, shots, shot, lanes1, live1, invalid);
                 let random_row = load_i32(controls, instruction);
                 let uniform = load_randoms(randoms, random_row, shots, shot, lanes1, live1);
-                let branch = lt_tile(uniform, probability_true);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, probability_true),
+                );
                 let branch_slot = load_u64(metadata, meta + 10i32);
                 let branch_bit = load_u64(metadata, meta + 11i32);
                 store_wide_branch(
@@ -1925,7 +1995,15 @@ mod kernels {
             } else if opcode == 3u64 {
                 let random_row = load_i32(controls, instruction);
                 let uniform = load_randoms(randoms, random_row, shots, shot, lanes1, live1);
-                let branch = lt_tile(uniform, half_f32_1);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, half_f32_1),
+                );
                 store_wide_branch(
                     branches,
                     shot,
@@ -2017,6 +2095,7 @@ mod kernels {
         parameters: *mut f32,
         expression_values: *mut u64,
         randoms: *mut f32,
+        invalid_pins: *mut u64,
         instruction_count: i32,
         random_stride: i32,
         shots: i32,
@@ -2064,6 +2143,7 @@ mod kernels {
         let mut branches2 = zero_shots;
         let mut branches3 = zero_shots;
         let mut discarded = zero_shots;
+        let mut invalid_pins_value = zero_shots;
 
         for instruction in 0i32..instruction_count {
             let meta = instruction * META_WORDS;
@@ -2210,10 +2290,20 @@ mod kernels {
                     nan::Enabled,
                     ftz::Disabled,
                 );
+                invalid_pins_value =
+                    mark_invalid_pin(metadata, meta, probability_true, invalid_pins_value);
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, probability_true);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, probability_true),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![64]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -2287,7 +2377,15 @@ mod kernels {
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, half_probability);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, half_probability),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![64]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -2337,6 +2435,15 @@ mod kernels {
         let logical_error_bits = andi(select(accepted, logical_bits, zero_shots), live_bits);
         let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded_bits, 0i32);
         let logical_error_count: Tile<u64, { [] }> = reduce_sum(logical_error_bits, 0i32);
+        store_u64_row(
+            invalid_pins,
+            0i32,
+            shots,
+            shot_start,
+            lanes,
+            live,
+            invalid_pins_value,
+        );
         store_u64(block_counts, pid * 2i32, discarded_count);
         store_u64(block_counts, pid * 2i32 + 1i32, logical_error_count);
     }
@@ -2353,6 +2460,7 @@ mod kernels {
         detectors: *mut u64,
         measurements: *mut u64,
         randoms: *mut f32,
+        invalid_pins: *mut u64,
         instruction_count: i32,
         random_stride: i32,
         shots: i32,
@@ -2393,6 +2501,7 @@ mod kernels {
         let mut branches2 = zero_shots;
         let mut branches3 = zero_shots;
         let mut discarded = zero_shots;
+        let mut invalid_pins_value = zero_shots;
 
         let mut instruction = 0i32;
         while instruction < instruction_count {
@@ -2549,10 +2658,20 @@ mod kernels {
                     pivot,
                     diagonal_phase_word,
                 );
+                invalid_pins_value =
+                    mark_invalid_pin(metadata, meta, probability_true, invalid_pins_value);
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, probability_true);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, probability_true),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![1]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -2652,7 +2771,15 @@ mod kernels {
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, half_probability);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, half_probability),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![1]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -2850,6 +2977,15 @@ mod kernels {
         let logical_error_bits = andi(select(accepted, logical_bits, zero_shots), live_bits);
         let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded_bits, 0i32);
         let logical_error_count: Tile<u64, { [] }> = reduce_sum(logical_error_bits, 0i32);
+        store_u64_row(
+            invalid_pins,
+            0i32,
+            shots,
+            shot_start,
+            lanes,
+            live,
+            invalid_pins_value,
+        );
         store_u64(block_counts, pid * 2i32, discarded_count);
         store_u64(block_counts, pid * 2i32 + 1i32, logical_error_count);
     }
@@ -2866,6 +3002,7 @@ mod kernels {
         detectors: *mut u64,
         measurements: *mut u64,
         randoms: *mut f32,
+        invalid_pins: *mut u64,
         instruction_count: i32,
         random_stride: i32,
         shots: i32,
@@ -2906,6 +3043,7 @@ mod kernels {
         let mut branches2 = zero_shots;
         let mut branches3 = zero_shots;
         let mut discarded = zero_shots;
+        let mut invalid_pins_value = zero_shots;
 
         let mut instruction = 0i32;
         while instruction < instruction_count {
@@ -3064,10 +3202,20 @@ mod kernels {
                     pivot,
                     diagonal_phase_word,
                 );
+                invalid_pins_value =
+                    mark_invalid_pin(metadata, meta, probability_true, invalid_pins_value);
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, probability_true);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, probability_true),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![1]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -3167,7 +3315,15 @@ mod kernels {
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, half_probability);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, half_probability),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![1]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -3365,6 +3521,15 @@ mod kernels {
         let logical_error_bits = andi(select(accepted, logical_bits, zero_shots), live_bits);
         let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded_bits, 0i32);
         let logical_error_count: Tile<u64, { [] }> = reduce_sum(logical_error_bits, 0i32);
+        store_u64_row(
+            invalid_pins,
+            0i32,
+            shots,
+            shot_start,
+            lanes,
+            live,
+            invalid_pins_value,
+        );
         store_u64(block_counts, pid * 2i32, discarded_count);
         store_u64(block_counts, pid * 2i32 + 1i32, logical_error_count);
     }
@@ -3381,6 +3546,7 @@ mod kernels {
         detectors: *mut u64,
         measurements: *mut u64,
         randoms: *mut f32,
+        invalid_pins: *mut u64,
         instruction_count: i32,
         random_stride: i32,
         shots: i32,
@@ -3421,6 +3587,7 @@ mod kernels {
         let mut branches2 = zero_shots;
         let mut branches3 = zero_shots;
         let mut discarded = zero_shots;
+        let mut invalid_pins_value = zero_shots;
 
         let mut instruction = 0i32;
         while instruction < instruction_count {
@@ -3632,10 +3799,20 @@ mod kernels {
                     nan::Enabled,
                     ftz::Disabled,
                 );
+                invalid_pins_value =
+                    mark_invalid_pin(metadata, meta, probability_true, invalid_pins_value);
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, probability_true);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, probability_true),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![1]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -3730,7 +3907,15 @@ mod kernels {
                 let random_row = load_i32(controls, control);
                 let uniform =
                     load_randoms(randoms, random_row, random_stride, shot_start, lanes, live);
-                let branch = lt_tile(uniform, half_probability);
+                let branch = forced_branch(
+                    metadata,
+                    meta,
+                    branches0,
+                    branches1,
+                    branches2,
+                    branches3,
+                    lt_tile(uniform, half_probability),
+                );
                 let branch_bit = broadcast_scalar(branch_bit, const_shape![1]);
                 let branch_value = select(branch, branch_bit, zero_shots);
                 if branch_slot < 64u64 {
@@ -3928,6 +4113,15 @@ mod kernels {
         let logical_error_bits = andi(select(accepted, logical_bits, zero_shots), live_bits);
         let discarded_count: Tile<u64, { [] }> = reduce_sum(discarded_bits, 0i32);
         let logical_error_count: Tile<u64, { [] }> = reduce_sum(logical_error_bits, 0i32);
+        store_u64_row(
+            invalid_pins,
+            0i32,
+            shots,
+            shot_start,
+            lanes,
+            live,
+            invalid_pins_value,
+        );
         store_u64(block_counts, pid * 2i32, discarded_count);
         store_u64(block_counts, pid * 2i32 + 1i32, logical_error_count);
     }

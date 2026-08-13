@@ -256,7 +256,7 @@ pub(crate) fn logical_records_for_observable(
         .collect()
 }
 
-fn logical_records_by_observable(
+pub(crate) fn logical_records_by_observable(
     observables: &[CircuitObservableInclude],
     observable_count: usize,
 ) -> Vec<Vec<Vec<i32>>> {
@@ -352,7 +352,7 @@ fn prepare_expression_plan(
     prepare_presampled_expression_plan(expression_plan, program, &samples)
 }
 
-fn reference_sample_for_program(
+pub(crate) fn reference_sample_for_program(
     program: &FactoredInstructionProgram,
     observable_records: &[Vec<Vec<i32>>],
     forced_branches: &[ForcedBranch],

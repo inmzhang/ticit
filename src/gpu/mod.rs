@@ -13,9 +13,10 @@ use std::time::Instant;
 use crate::circuit::{Circuit, has_postselection, plan_circuit};
 use crate::factored::FactoredInstructionProgram;
 use crate::random::block_seed;
+use crate::sampler::pinning::{MeasurementParity, plan_pinned_measurements};
 use crate::sampler::prepared::{
-    SampleCounts, SampleResult, SamplingTiming, logical_records_for_observable,
-    make_circuit_sampling_input,
+    SampleCounts, SampleResult, SamplingTiming, logical_records_by_observable,
+    logical_records_for_observable, make_circuit_sampling_input, reference_sample_for_program,
 };
 use crate::symbolic::SymbolicCategoricalDistribution;
 use anyhow::{Context, Result, bail, ensure};
@@ -122,6 +123,11 @@ pub struct GpuOptions {
     /// This is the default for user-facing sampling. Set it to `false` only
     /// for an explicitly requested aggregate-counter run.
     pub keep_records: bool,
+
+    /// Measurement parities enforced in the noiseless circuit. The GPU
+    /// sampler rejects a pinned branch whose runtime probability is not one
+    /// half, matching [`crate::SamplerOptions::pin_measurements`].
+    pub pin_measurements: Vec<MeasurementParity>,
 }
 
 struct WideBuffers {
@@ -167,7 +173,13 @@ pub fn run(args: &GpuOptions) -> Result<()> {
         .with_context(|| format!("failed to parse {}", args.circuit.display()))?;
     let parse_s = parse_start.elapsed().as_secs_f64();
     let reference = if args.normalize_syndromes {
-        parsed.reference_sample()?
+        let program = plan_circuit(&parsed, &args.postselection_mask)?;
+        let forced = plan_pinned_measurements(&program, &args.pin_measurements)?;
+        reference_sample_for_program(
+            &program,
+            &logical_records_by_observable(&parsed.observables, parsed.observable_count()),
+            &forced,
+        )?
     } else {
         crate::ReferenceSample::default()
     };
@@ -183,6 +195,7 @@ pub fn run(args: &GpuOptions) -> Result<()> {
         Some(&args.circuit),
         args.keep_records,
         None,
+        &args.pin_measurements,
         &reference.detectors,
         &reference.observables,
     )?;
@@ -227,6 +240,28 @@ pub fn sample_circuit(
     postselection_mask: &[u8],
     observable: usize,
 ) -> Result<SampleResult> {
+    sample_circuit_with_pins(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        &[],
+    )
+}
+
+/// Samples on CUDA while pinning noiseless measurement parities. A pin is
+/// rejected if its branch is not a fair coin at runtime.
+pub fn sample_circuit_with_pins(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    pin_measurements: &[MeasurementParity],
+) -> Result<SampleResult> {
     sample_circuit_impl(
         circuit,
         shots,
@@ -238,6 +273,7 @@ pub fn sample_circuit(
         None,
         true,
         None,
+        pin_measurements,
         &[],
         &[],
     )
@@ -263,6 +299,33 @@ pub fn sample_circuit_with_reference(
     expected_detectors: &[u8],
     expected_observables: &[u8],
 ) -> Result<SampleResult> {
+    sample_circuit_with_reference_and_pins(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        &[],
+        expected_detectors,
+        expected_observables,
+    )
+}
+
+/// Samples on CUDA with explicit references and pinned noiseless measurement
+/// parities.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_with_reference_and_pins(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    pin_measurements: &[MeasurementParity],
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
     sample_circuit_impl(
         circuit,
         shots,
@@ -274,6 +337,7 @@ pub fn sample_circuit_with_reference(
         None,
         true,
         None,
+        pin_measurements,
         expected_detectors,
         expected_observables,
     )
@@ -297,13 +361,29 @@ pub fn sample_circuit_records(
     observable: usize,
     exact_k: Option<usize>,
 ) -> Result<SampleResult> {
-    sample_circuit_records_with_reference(
+    sample_circuit_records_with_pins(circuit, shots, seed, chunk_shots, observable, exact_k, &[])
+}
+
+/// Retains GPU records while pinning noiseless measurement parities. A pin is
+/// rejected if its branch is not a fair coin at runtime.
+pub fn sample_circuit_records_with_pins(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    observable: usize,
+    exact_k: Option<usize>,
+    pin_measurements: &[MeasurementParity],
+) -> Result<SampleResult> {
+    sample_circuit_records_with_reference_and_postselection_and_pins(
         circuit,
         shots,
         seed,
         chunk_shots,
+        &[],
         observable,
         exact_k,
+        pin_measurements,
         &[],
         &[],
     )
@@ -326,7 +406,7 @@ pub fn sample_circuit_records_with_reference(
     expected_detectors: &[u8],
     expected_observables: &[u8],
 ) -> Result<SampleResult> {
-    sample_circuit_records_with_reference_and_postselection(
+    sample_circuit_records_with_reference_and_postselection_and_pins(
         circuit,
         shots,
         seed,
@@ -334,6 +414,7 @@ pub fn sample_circuit_records_with_reference(
         &[],
         observable,
         exact_k,
+        &[],
         expected_detectors,
         expected_observables,
     )
@@ -353,6 +434,35 @@ pub fn sample_circuit_records_with_reference_and_postselection(
     expected_detectors: &[u8],
     expected_observables: &[u8],
 ) -> Result<SampleResult> {
+    sample_circuit_records_with_reference_and_postselection_and_pins(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        exact_k,
+        &[],
+        expected_detectors,
+        expected_observables,
+    )
+}
+
+/// Retains GPU records with exact-k conditioning, detector postselection,
+/// reference normalization, and pinned noiseless measurement parities.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_records_with_reference_and_postselection_and_pins(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    exact_k: Option<usize>,
+    pin_measurements: &[MeasurementParity],
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
     sample_circuit_impl(
         circuit,
         shots,
@@ -364,6 +474,7 @@ pub fn sample_circuit_records_with_reference_and_postselection(
         None,
         true,
         exact_k,
+        pin_measurements,
         expected_detectors,
         expected_observables,
     )
@@ -381,6 +492,28 @@ pub fn sample_circuit_counts(
     postselection_mask: &[u8],
     observable: usize,
 ) -> Result<SampleResult> {
+    sample_circuit_counts_with_pins(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        &[],
+    )
+}
+
+/// Returns aggregate CUDA counters while pinning noiseless measurement
+/// parities. A pin is rejected if its branch is not a fair coin at runtime.
+pub fn sample_circuit_counts_with_pins(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    pin_measurements: &[MeasurementParity],
+) -> Result<SampleResult> {
     sample_circuit_impl(
         circuit,
         shots,
@@ -392,6 +525,7 @@ pub fn sample_circuit_counts(
         None,
         false,
         None,
+        pin_measurements,
         &[],
         &[],
     )
@@ -410,6 +544,33 @@ pub fn sample_circuit_counts_with_reference(
     expected_detectors: &[u8],
     expected_observables: &[u8],
 ) -> Result<SampleResult> {
+    sample_circuit_counts_with_reference_and_pins(
+        circuit,
+        shots,
+        seed,
+        chunk_shots,
+        postselection_mask,
+        observable,
+        &[],
+        expected_detectors,
+        expected_observables,
+    )
+}
+
+/// Returns aggregate CUDA counters with explicit references and pinned
+/// noiseless measurement parities.
+#[allow(clippy::too_many_arguments)]
+pub fn sample_circuit_counts_with_reference_and_pins(
+    circuit: &Circuit,
+    shots: u64,
+    seed: u64,
+    chunk_shots: NonZeroUsize,
+    postselection_mask: &[u8],
+    observable: usize,
+    pin_measurements: &[MeasurementParity],
+    expected_detectors: &[u8],
+    expected_observables: &[u8],
+) -> Result<SampleResult> {
     sample_circuit_impl(
         circuit,
         shots,
@@ -421,6 +582,7 @@ pub fn sample_circuit_counts_with_reference(
         None,
         false,
         None,
+        pin_measurements,
         expected_detectors,
         expected_observables,
     )
@@ -438,6 +600,7 @@ fn sample_circuit_impl(
     report_path: Option<&Path>,
     keep_records: bool,
     exact_k: Option<usize>,
+    pin_measurements: &[MeasurementParity],
     expected_detectors: &[u8],
     expected_observables: &[u8],
 ) -> Result<SampleResult> {
@@ -464,6 +627,8 @@ fn sample_circuit_impl(
 
     let plan_start = Instant::now();
     let mut program = plan_circuit(parsed, postselection_mask).context("failed to plan circuit")?;
+    let forced_branches = plan_pinned_measurements(&program, pin_measurements)
+        .context("failed to plan pinned measurement parities")?;
     if let Some(k) = exact_k {
         condition_exact_k(&mut program, k)?;
     }
@@ -475,8 +640,13 @@ fn sample_circuit_impl(
         parsed.observable_count(),
         SamplingTiming::default(),
     );
-    let mut gpu_plan = plan::GpuPlan::build(&input.program, &input.logical_records, keep_records)
-        .context("failed to lower the GPU plan")?;
+    let mut gpu_plan = plan::GpuPlan::build_with_forced(
+        &input.program,
+        &input.logical_records,
+        keep_records,
+        &forced_branches,
+    )
+    .context("failed to lower the GPU plan")?;
     apply_detector_reference(&mut gpu_plan, expected_detectors);
     let postselect_detectors: Vec<usize> = gpu_plan
         .instructions
@@ -613,6 +783,8 @@ fn sample_circuit_impl(
         cutile::api::zeros(&[expression_partial_capacity]).sync_on(&stream)?;
     let block_counts: Arc<Tensor<u64>> =
         Arc::new(cutile::api::zeros(&[max_sample_blocks * 2]).sync_on(&stream)?);
+    let pin_invalid_values: Arc<Tensor<u64>> =
+        Arc::new(cutile::api::zeros(&[max_chunk]).sync_on(&stream)?);
     let expectations: Arc<Tensor<f32>> = Arc::new(
         cutile::api::zeros(&[if keep_records {
             input
@@ -986,6 +1158,7 @@ fn sample_circuit_impl(
                     parameters.device_pointer(),
                     expression_values.device_pointer(),
                     branch_randoms.device_pointer(),
+                    pin_invalid_values.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
                     chunk as i32,
@@ -1011,6 +1184,7 @@ fn sample_circuit_impl(
                     detector_values.device_pointer(),
                     measurement_values.device_pointer(),
                     branch_randoms.device_pointer(),
+                    pin_invalid_values.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
                     chunk as i32,
@@ -1039,6 +1213,7 @@ fn sample_circuit_impl(
                     detector_values.device_pointer(),
                     measurement_values.device_pointer(),
                     branch_randoms.device_pointer(),
+                    pin_invalid_values.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
                     chunk as i32,
@@ -1066,6 +1241,7 @@ fn sample_circuit_impl(
                     detector_values.device_pointer(),
                     measurement_values.device_pointer(),
                     branch_randoms.device_pointer(),
+                    pin_invalid_values.device_pointer(),
                     instruction_count as i32,
                     chunk as i32,
                     chunk as i32,
@@ -1093,6 +1269,7 @@ fn sample_circuit_impl(
                     wide.primary_im.device_pointer(),
                     wide.branches.device_pointer(),
                     wide.discarded.device_pointer(),
+                    pin_invalid_values.device_pointer(),
                     wide.dimension as i32,
                     (1usize << input.program.initial_k) as i32,
                     chunk as i32,
@@ -1157,6 +1334,7 @@ fn sample_circuit_impl(
                         output_im,
                         wide.branches.device_pointer(),
                         wide.discarded.device_pointer(),
+                        pin_invalid_values.device_pointer(),
                         metadata.device_pointer(),
                         controls.device_pointer(),
                         parameters.device_pointer(),
@@ -1241,6 +1419,12 @@ fn sample_circuit_impl(
 
         let copy_start = Instant::now();
         let count_partials = (&count_partials).to_host_vec().sync_on(&stream)?;
+        if !pin_measurements.is_empty() {
+            let invalid_pins = (&pin_invalid_values).to_host_vec().sync_on(&stream)?;
+            if invalid_pins[..chunk].iter().any(|&invalid| invalid != 0) {
+                bail!("pinned measurement branch has probability other than one half");
+            }
+        }
         let measurement_chunk = keep_records
             .then(|| (&measurement_values).to_host_vec().sync_on(&stream))
             .transpose()?;
