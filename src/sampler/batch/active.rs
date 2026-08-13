@@ -508,11 +508,78 @@ fn project_nondiagonal_batch(
     copy_projected_active_prefix_from_scratch(runtime, kernel.out_dim);
 }
 
-/// Draws one branch per live shot in ascending shot order, packing branch
-/// bits and computing per-shot inverse norms.
+// ==============================================================================
+// Branch resolution
+// ==============================================================================
+//
+// Both branch loops below are generic over `PINNED` rather than testing an
+// `Option` per shot. These are the hottest inner loops in the sampler —
+// measurement-dense circuits run them once per record per shot — and carrying
+// the pin through them cost about 5% on `msc_d3`. Monomorphizing gives the
+// ordinary sampling path back its original code.
+
+/// Tolerance on a pinned branch's probability. Pinning conditions the shot on
+/// the branch outcome; unless that outcome was a genuine coin flip the shot
+/// carries a weight this API does not report, so anything else is rejected
+/// rather than silently biasing the caller's estimate.
+const FAIR_BRANCH_TOLERANCE: f64 = 1e-9;
+
+fn impossible_branch_message(pinned: bool) -> &'static str {
+    if pinned {
+        "pinned measurement parity forces an active branch the state cannot take"
+    } else {
+        "sampled an impossible active measurement branch"
+    }
+}
+
+/// Resolves one shot's branch: pinned when the caller enforced a parity that
+/// lands on this instruction, drawn otherwise.
+#[inline(always)]
+fn resolve_batch_branch<const PINNED: bool>(
+    rng_state: &mut u64,
+    forced: &[u64],
+    shot: usize,
+    probability_true: f64,
+) -> Result<bool> {
+    if !PINNED {
+        return sample_bernoulli(rng_state, probability_true);
+    }
+    if (probability_true - 0.5).abs() > FAIR_BRANCH_TOLERANCE {
+        return Err(TicitError::new(format!(
+            "pinned measurement branch has probability {probability_true}, not one half; \
+             pinning it would bias sampling"
+        )));
+    }
+    Ok(batch_bit_at(forced, shot))
+}
+
 fn sample_batch_measurement_branches_from_true(
     runtime: &mut BatchFactoredExecutorState,
     branch_bits: &mut Vec<u64>,
+    forced: Option<&[u64]>,
+) -> Result<()> {
+    match forced {
+        None => sample_batch_measurement_branches_impl::<false>(runtime, branch_bits, &[]),
+        Some(bits) => sample_batch_measurement_branches_pinned(runtime, branch_bits, bits),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn sample_batch_measurement_branches_pinned(
+    runtime: &mut BatchFactoredExecutorState,
+    branch_bits: &mut Vec<u64>,
+    forced: &[u64],
+) -> Result<()> {
+    sample_batch_measurement_branches_impl::<true>(runtime, branch_bits, forced)
+}
+
+/// Draws or pins one branch per live shot in ascending shot order, packing
+/// branch bits and computing per-shot inverse norms.
+fn sample_batch_measurement_branches_impl<const PINNED: bool>(
+    runtime: &mut BatchFactoredExecutorState,
+    branch_bits: &mut Vec<u64>,
+    forced: &[u64],
 ) -> Result<()> {
     if branch_bits.len() < runtime.batch_words {
         branch_bits.resize(runtime.batch_words, 0);
@@ -525,15 +592,13 @@ fn sample_batch_measurement_branches_from_true(
         for bit in 0..live {
             let shot = base_shot + bit;
             let pt = runtime.branch_prob_true[shot].clamp(0.0, 1.0);
-            let branch = sample_bernoulli(&mut runtime.rng_state, pt)?;
+            let branch = resolve_batch_branch::<PINNED>(&mut runtime.rng_state, forced, shot, pt)?;
             if branch {
                 packed |= 1u64 << bit;
             }
             let probability = if branch { pt } else { 1.0 - pt };
             if probability <= 0.0 {
-                return Err(TicitError::new(
-                    "sampled an impossible active measurement branch",
-                ));
+                return Err(TicitError::new(impossible_branch_message(PINNED)));
             }
             runtime.branch_invnorms[shot] = 1.0 / probability.sqrt();
         }
@@ -553,6 +618,52 @@ fn measure_shot_major_active_branch_batch(
     kernel: &PrecomputedActivePauliMeasurementKernel,
     branch_condition: i32,
     branch_scratch: &mut Vec<u64>,
+    forced: Option<&[u64]>,
+) -> Result<()> {
+    match forced {
+        None => measure_shot_major_active_branch_impl::<false>(
+            runtime,
+            kernel,
+            branch_condition,
+            branch_scratch,
+            &[],
+        ),
+        Some(bits) => measure_shot_major_active_branch_pinned(
+            runtime,
+            kernel,
+            branch_condition,
+            branch_scratch,
+            bits,
+        ),
+    }
+}
+
+/// Outlined `cold` so the pinned instantiation lands in `.text.unlikely` and
+/// leaves the ordinary draw loop's code layout alone.
+#[cold]
+#[inline(never)]
+fn measure_shot_major_active_branch_pinned(
+    runtime: &mut BatchFactoredExecutorState,
+    kernel: &PrecomputedActivePauliMeasurementKernel,
+    branch_condition: i32,
+    branch_scratch: &mut Vec<u64>,
+    forced: &[u64],
+) -> Result<()> {
+    measure_shot_major_active_branch_impl::<true>(
+        runtime,
+        kernel,
+        branch_condition,
+        branch_scratch,
+        forced,
+    )
+}
+
+fn measure_shot_major_active_branch_impl<const PINNED: bool>(
+    runtime: &mut BatchFactoredExecutorState,
+    kernel: &PrecomputedActivePauliMeasurementKernel,
+    branch_condition: i32,
+    branch_scratch: &mut Vec<u64>,
+    forced: &[u64],
 ) -> Result<()> {
     if branch_scratch.len() < runtime.batch_words {
         branch_scratch.resize(runtime.batch_words, 0);
@@ -576,15 +687,13 @@ fn measure_shot_major_active_branch_batch(
                     nondiagonal_probability_contiguous(re, im, kernel, true)
                 }
             };
-            let branch = sample_bernoulli(&mut runtime.rng_state, pt)?;
+            let branch = resolve_batch_branch::<PINNED>(&mut runtime.rng_state, forced, shot, pt)?;
             if branch {
                 packed |= 1u64 << bit;
             }
             let probability_sampled = if branch { pt } else { 1.0 - pt };
             if probability_sampled <= 0.0 {
-                return Err(TicitError::new(
-                    "sampled an impossible active measurement branch",
-                ));
+                return Err(TicitError::new(impossible_branch_message(PINNED)));
             }
             let invnorm = 1.0 / probability_sampled.sqrt();
             if kernel.is_diagonal {
@@ -625,6 +734,7 @@ pub(crate) fn measure_precomputed_active_pauli_branch_batch(
     kernel: &PrecomputedActivePauliMeasurementKernel,
     branch_condition: i32,
     branch_scratch: &mut Vec<u64>,
+    forced: Option<&[u64]>,
 ) -> Result<()> {
     if runtime.k == 0 {
         return Err(TicitError::new(
@@ -642,6 +752,7 @@ pub(crate) fn measure_precomputed_active_pauli_branch_batch(
             kernel,
             branch_condition,
             branch_scratch,
+            forced,
         );
     }
     if runtime.active_pitch == 1 {
@@ -650,7 +761,7 @@ pub(crate) fn measure_precomputed_active_pauli_branch_batch(
         } else {
             nondiagonal_probability_contiguous(&runtime.active_re, &runtime.active_im, kernel, true)
         };
-        sample_batch_measurement_branches_from_true(runtime, branch_scratch)?;
+        sample_batch_measurement_branches_from_true(runtime, branch_scratch, forced)?;
         let branch = batch_bit_at(branch_scratch, 0);
         let invnorm = runtime.branch_invnorms[0];
         if kernel.is_diagonal {
@@ -679,7 +790,7 @@ pub(crate) fn measure_precomputed_active_pauli_branch_batch(
         return finish_active_measurement_branch(runtime, branch_condition, branch_scratch);
     }
     compute_active_measurement_true_prob_batch(runtime, kernel);
-    sample_batch_measurement_branches_from_true(runtime, branch_scratch)?;
+    sample_batch_measurement_branches_from_true(runtime, branch_scratch, forced)?;
     if kernel.is_diagonal {
         // Divergent branches become a per-lane source-index gather.
         let pitch = runtime.active_pitch;

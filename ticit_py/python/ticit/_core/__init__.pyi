@@ -81,7 +81,7 @@ class Circuit:
         r"""
         Parses a circuit from a UTF-8 file.
         """
-    def compile(self, postselection_mask: typing.Optional[typing.Sequence[builtins.int]] = None, *, normalize_syndromes: builtins.bool = False, expected_detectors: typing.Optional[typing.Sequence[builtins.int]] = None, expected_observables: typing.Optional[typing.Sequence[builtins.int]] = None, backend: builtins.str = 'cpu', observable: builtins.int = 0, threads: builtins.int = 1, sample_chunk_shots: builtins.int = 0, batch_size: builtins.int = 0, gpu_chunk_shots: builtins.int = 1048576) -> Program:
+    def compile(self, postselection_mask: typing.Optional[typing.Sequence[builtins.int]] = None, *, normalize_syndromes: builtins.bool = False, expected_detectors: typing.Optional[typing.Sequence[builtins.int]] = None, expected_observables: typing.Optional[typing.Sequence[builtins.int]] = None, pin_measurements: typing.Optional[typing.Sequence[tuple[typing.Sequence[builtins.int], builtins.bool]]] = None, backend: builtins.str = 'cpu', observable: builtins.int = 0, threads: builtins.int = 1, sample_chunk_shots: builtins.int = 0, batch_size: builtins.int = 0, gpu_chunk_shots: builtins.int = 1048576) -> Program:
         r"""
         Compiles this circuit into a reusable `Program`.
         """
@@ -639,7 +639,7 @@ class TableauSimulator:
         """
     def __repr__(self) -> builtins.str: ...
 
-def compile(stim_text: builtins.str, postselection_mask: typing.Optional[typing.Sequence[builtins.int]] = None, expected_detectors: typing.Optional[typing.Sequence[builtins.int]] = None, expected_observables: typing.Optional[typing.Sequence[builtins.int]] = None, normalize_syndromes: builtins.bool = False, *, backend: builtins.str = 'cpu', observable: builtins.int = 0, threads: builtins.int = 1, sample_chunk_shots: builtins.int = 0, batch_size: builtins.int = 0, gpu_chunk_shots: builtins.int = 1048576) -> Program:
+def compile(stim_text: builtins.str, postselection_mask: typing.Optional[typing.Sequence[builtins.int]] = None, expected_detectors: typing.Optional[typing.Sequence[builtins.int]] = None, expected_observables: typing.Optional[typing.Sequence[builtins.int]] = None, normalize_syndromes: builtins.bool = False, *, pin_measurements: typing.Optional[typing.Sequence[tuple[typing.Sequence[builtins.int], builtins.bool]]] = None, backend: builtins.str = 'cpu', observable: builtins.int = 0, threads: builtins.int = 1, sample_chunk_shots: builtins.int = 0, batch_size: builtins.int = 0, gpu_chunk_shots: builtins.int = 1048576) -> Program:
     r"""
     Compiles circuit text into a reusable `Program`.
 
@@ -653,6 +653,14 @@ def compile(stim_text: builtins.str, postselection_mask: typing.Optional[typing.
         expected_detectors: Explicit detector reference bits.
         expected_observables: Explicit observable reference bits.
         normalize_syndromes: Compute and apply a noiseless reference sample.
+        pin_measurements: `[(records, value), ...]` parities every shot's
+            noiseless circuit must produce. A free parity is pinned by forcing
+            the last measurement branch it depends on; a parity the circuit
+            already determines must match, or compilation raises. Noise still
+            flips the recorded parity, so a decoder still sees its errors. Each
+            shot is conditioned on a probability-one-half branch, so sampling
+            every combination of the pinned parities with equal shots is
+            unbiased. Sampling raises if a pinned branch is not a fair coin.
         backend: `"cpu"` or `"gpu"`.
         observable: Observable index counted as a logical error.
         threads: CPU worker count.

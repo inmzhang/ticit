@@ -32,6 +32,7 @@ use crate::active::active_length;
 use crate::bits::symbol_word_count;
 use crate::errors::{Result, TicitError};
 use crate::factored::FactoredInstructionProgram;
+use crate::pinning::ForcedBranch;
 use crate::random::next_random_u64;
 
 pub(crate) const DEFAULT_BATCH_SHOTS: usize = 2048;
@@ -110,6 +111,12 @@ pub struct BatchFactoredExecutorState {
     pub active_components: Vec<BatchActiveComponent>,
     /// One shared SplitMix64 state for the whole batch.
     pub rng_state: u64,
+    /// Measurement branches pinned by enforced parities, keyed by instruction.
+    /// Empty for ordinary sampling, which is the only case the hot path pays
+    /// for: one `is_empty` test per branch measurement.
+    pub forced_branches: Vec<ForcedBranch>,
+    /// Working buffer for one instruction's forced branch bits.
+    pub forced_branch_scratch: Vec<u64>,
 }
 
 pub fn default_batch_count(max_k: usize) -> Result<usize> {
@@ -222,6 +229,26 @@ pub(crate) fn invert_batch_bits(bits: &mut [u64], runtime: &BatchFactoredExecuto
         bits[word] = !bits[word] & batch_live_word_mask(runtime, word);
     }
     bits[nwords..].fill(0);
+}
+
+/// Copies `source` into `bits`, masked to the live shots.
+pub(crate) fn copy_batch_bits(
+    bits: &mut Vec<u64>,
+    source: &[u64],
+    runtime: &BatchFactoredExecutorState,
+) -> Result<()> {
+    let nwords = runtime_batch_word_count(runtime);
+    if source.len() < nwords {
+        return Err(TicitError::new("batch bit vector is too short"));
+    }
+    if bits.len() < runtime.batch_words {
+        bits.resize(runtime.batch_words, 0);
+    }
+    for word in 0..nwords {
+        bits[word] = source[word] & batch_live_word_mask(runtime, word);
+    }
+    bits[nwords..].fill(0);
+    Ok(())
 }
 
 /// Fair coins for the whole batch: one raw draw per live word, never per shot.

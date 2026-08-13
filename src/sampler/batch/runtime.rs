@@ -15,8 +15,8 @@ use super::symbols::{
 };
 use super::{
     BatchFactoredExecutorState, batch_live_word_mask, batch_record_offset, batch_shot_mask,
-    batch_shot_word, fill_batch_random_half_bits, live_word_mask_for_shots, merge_batch_components,
-    runtime_batch_word_count, with_batch_component,
+    batch_shot_word, copy_batch_bits, fill_batch_random_half_bits, live_word_mask_for_shots,
+    merge_batch_components, runtime_batch_word_count, with_batch_component,
 };
 use crate::active::active_length;
 #[cfg(test)]
@@ -186,6 +186,64 @@ impl BatchSignSource<'_> {
 }
 
 // ==============================================================================
+// Pinned measurement branches
+// ==============================================================================
+
+/// Evaluates the branch value pinned at `instruction_index`, if any.
+///
+/// The bits come back in a buffer lifted out of the runtime, because
+/// evaluating the pin needs the symbol table the runtime owns while the caller
+/// needs `&mut` access to the rest of it. [`restore_forced_branch_bits`] puts
+/// the buffer back.
+///
+/// The empty test stays inline and everything else is outlined `cold`: this
+/// sits in the executor's per-instruction dispatch, where the repository has
+/// repeatedly measured code layout alone moving throughput by percent.
+#[inline(always)]
+fn take_forced_branch_bits(
+    runtime: &mut BatchFactoredExecutorState,
+    instruction_index: usize,
+) -> Result<Option<Vec<u64>>> {
+    if runtime.forced_branches.is_empty() {
+        return Ok(None);
+    }
+    take_pinned_branch_bits(runtime, instruction_index)
+}
+
+#[cold]
+#[inline(never)]
+fn take_pinned_branch_bits(
+    runtime: &mut BatchFactoredExecutorState,
+    instruction_index: usize,
+) -> Result<Option<Vec<u64>>> {
+    let Some(position) = runtime
+        .forced_branches
+        .iter()
+        .position(|forced| forced.instruction == instruction_index)
+    else {
+        return Ok(None);
+    };
+    let branches = std::mem::take(&mut runtime.forced_branches);
+    let mut bits = std::mem::take(&mut runtime.forced_branch_scratch);
+    let result = eval_symbolic_bool_batch(&mut bits, &branches[position].plan, runtime);
+    runtime.forced_branches = branches;
+    match result {
+        Ok(()) => Ok(Some(bits)),
+        Err(error) => {
+            runtime.forced_branch_scratch = bits;
+            Err(error)
+        }
+    }
+}
+
+#[inline(always)]
+fn restore_forced_branch_bits(runtime: &mut BatchFactoredExecutorState, bits: Option<Vec<u64>>) {
+    if let Some(bits) = bits {
+        runtime.forced_branch_scratch = bits;
+    }
+}
+
+// ==============================================================================
 // Per-instruction execution
 // ==============================================================================
 
@@ -269,12 +327,16 @@ pub(crate) fn execute_batch_instruction(
                     exp_val,
                 );
             }
-            measure_precomputed_active_pauli_branch_batch(
+            let forced = take_forced_branch_bits(runtime, instruction_index)?;
+            let measured = measure_precomputed_active_pauli_branch_batch(
                 runtime,
                 &inst.kernel,
                 inst.branch,
                 work,
-            )?;
+                forced.as_deref(),
+            );
+            restore_forced_branch_bits(runtime, forced);
+            measured?;
             if write_direct_branch_measurement_record(
                 runtime,
                 work,
@@ -292,7 +354,16 @@ pub(crate) fn execute_batch_instruction(
             if let Some(exp_val) = inst.exp_val {
                 return write_zero_batch_expectation(runtime, exp_val);
             }
-            fill_batch_random_half_bits(work, runtime);
+            // A dormant branch is a fair coin no matter what the state is, so a
+            // pin here never needs the fairness check the active path makes.
+            match take_forced_branch_bits(runtime, instruction_index)? {
+                Some(bits) => {
+                    let copied = copy_batch_bits(work, &bits, runtime);
+                    runtime.forced_branch_scratch = bits;
+                    copied?;
+                }
+                None => fill_batch_random_half_bits(work, runtime),
+            }
             assign_batch_symbol(runtime, inst.branch, work)?;
             if write_direct_branch_measurement_record(
                 runtime,
@@ -384,14 +455,18 @@ pub(crate) fn execute_batch_component_instruction(
             )?;
             let kernel = measurement.kernel;
             let branch_condition = instruction.branch;
-            with_batch_component(runtime, measurement.component, |scoped| {
+            let forced = take_forced_branch_bits(runtime, instruction_index)?;
+            let measured = with_batch_component(runtime, measurement.component, |scoped| {
                 measure_precomputed_active_pauli_branch_batch(
                     scoped,
                     &kernel,
                     branch_condition,
                     work,
+                    forced.as_deref(),
                 )
-            })?;
+            });
+            restore_forced_branch_bits(runtime, forced);
+            measured?;
             // The component scope restored the global k; the measurement's
             // global effect is applied here, on top of the component-local one.
             runtime.k -= 1;

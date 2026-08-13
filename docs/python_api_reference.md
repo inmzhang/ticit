@@ -184,6 +184,7 @@ def circuit.compile(
     normalize_syndromes: bool = False,
     expected_detectors: Sequence[int] | None = None,
     expected_observables: Sequence[int] | None = None,
+    pin_measurements: Sequence[tuple[Sequence[int], bool]] | None = None,
     backend: str = "cpu",
     observable: int = 0,
     threads: int = 1,
@@ -200,6 +201,32 @@ detector and observable outcomes against it. Explicit `expected_detectors` and
 `expected_observables` may be supplied instead, but cannot be combined with
 `normalize_syndromes`. Both CPU and GPU sampling use the prepared vectors.
 
+### Pinned measurement parities
+
+`pin_measurements` takes `(records, value)` pairs, each requiring that the XOR
+of those measurement records is `value` in the **noiseless** circuit, in every
+shot. Use it when a circuit is one compiled path of an adaptive program and the
+path is only valid for one outcome of a logical measurement: without it, half
+the shots per branch land on the wrong path and are discarded.
+
+A parity the circuit leaves free is pinned by forcing the last measurement
+branch it depends on. A parity the circuit already determines must already
+equal `value`, or compilation raises `ValueError`.
+
+Pins act on measurement *branches*, so noise still flips the recorded parity
+and a decoder still sees the errors it must correct; what becomes deterministic
+is the parity the noiseless circuit would have produced. Each pinned shot is
+conditioned on a probability-one-half branch outcome, so sampling every
+combination of the pinned parities with equal shots reproduces the
+unconditioned distribution exactly. Sampling raises `ValueError` if a pinned
+branch turns out not to be a fair coin, because such a shot would carry a
+weight this API does not report.
+
+The reference sample `normalize_syndromes=True` computes obeys the same pins,
+so a pinned observable normalizes against the value the pinned shots share.
+
+Pinning requires `backend="cpu"`.
+
 ### `ticit.Circuit.reference_sample`
 
 ```python
@@ -207,7 +234,9 @@ def circuit.reference_sample() -> ticit.ReferenceSample
 ```
 
 Returns the full noiseless detector and observable parity vectors. This is the
-same CPU reference used by `normalize_syndromes=True`.
+same CPU reference used by `normalize_syndromes=True`. Where the circuit leaves
+a measurement free, any outcome gives a valid noiseless sample and this picks
+one; `pin_measurements` is what constrains that choice.
 
 ## `ticit.ReferenceSample`
 
@@ -666,6 +695,7 @@ def ticit.compile(
     expected_observables: Sequence[int] | None = None,
     normalize_syndromes: bool = False,
     *,
+    pin_measurements: Sequence[tuple[Sequence[int], bool]] | None = None,
     backend: str = "cpu",
     observable: int = 0,
     threads: int = 1,
@@ -689,6 +719,9 @@ Arguments:
 - `expected_observables`: explicit observable reference bits, one per index.
 - `normalize_syndromes`: compute a noiseless reference on the CPU during
   preparation. Mutually exclusive with explicit reference vectors.
+- `pin_measurements`: `(records, value)` parities every shot's noiseless circuit
+  must produce; see
+  [Pinned measurement parities](#pinned-measurement-parities).
 - `backend`: `"cpu"` or `"gpu"`.
 - `observable`: observable index counted as a logical error.
 - `threads`: maximum CPU worker count; must be positive.

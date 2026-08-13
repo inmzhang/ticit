@@ -34,6 +34,7 @@ pub use crate::errors::{Result, TicitError};
 pub use crate::pauli::{
     Pauli, PauliBasis, PauliString, neg, pauli_identity, pauli_string, pauli_x, pauli_y, pauli_z,
 };
+pub use crate::sampler::pinning::MeasurementParity;
 pub use crate::sampler::prepared::{
     ReferenceSample, SampleCounts, SampleResult, Sampler, SamplerInfo, SamplerOptions,
     SamplingTiming,
@@ -42,7 +43,7 @@ pub use crate::tableau_simulator::{
     BatchOutcome, Gate1Q, Instruction, MeasureResult, SimError, TableauSimulator,
 };
 
-pub(crate) use crate::sampler::{batch, exogenous, presampled_expression};
+pub(crate) use crate::sampler::{batch, exogenous, pinning, presampled_expression};
 
 #[cfg(test)]
 mod test_support;

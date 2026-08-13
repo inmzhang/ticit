@@ -93,6 +93,7 @@ impl PyCircuit {
         normalize_syndromes=false,
         expected_detectors=None,
         expected_observables=None,
+        pin_measurements=None,
         backend="cpu",
         observable=0,
         threads=1,
@@ -106,6 +107,7 @@ impl PyCircuit {
         normalize_syndromes: bool,
         expected_detectors: Option<Vec<u8>>,
         expected_observables: Option<Vec<u8>>,
+        pin_measurements: Option<Vec<(Vec<usize>, bool)>>,
         backend: &str,
         observable: usize,
         threads: usize,
@@ -119,6 +121,7 @@ impl PyCircuit {
             normalize_syndromes,
             expected_detectors.unwrap_or_default(),
             expected_observables.unwrap_or_default(),
+            measurement_parities(pin_measurements),
             backend,
             observable,
             threads,
@@ -201,6 +204,18 @@ impl From<ticit::ReferenceSample> for PyReferenceSample {
             observables: sample.observables.into_iter().map(|bit| bit != 0).collect(),
         }
     }
+}
+
+/// Translates the Python `[(records, value), ...]` spelling of pinned
+/// measurement parities.
+fn measurement_parities(
+    parities: Option<Vec<(Vec<usize>, bool)>>,
+) -> Vec<ticit::MeasurementParity> {
+    parities
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(records, value)| ticit::MeasurementParity { records, value })
+        .collect()
 }
 
 enum Backend {
@@ -627,6 +642,14 @@ fn parse_file(path: &str) -> PyResult<PyCircuit> {
 ///     expected_detectors: Explicit detector reference bits.
 ///     expected_observables: Explicit observable reference bits.
 ///     normalize_syndromes: Compute and apply a noiseless reference sample.
+///     pin_measurements: `[(records, value), ...]` parities every shot's
+///         noiseless circuit must produce. A free parity is pinned by forcing
+///         the last measurement branch it depends on; a parity the circuit
+///         already determines must match, or compilation raises. Noise still
+///         flips the recorded parity, so a decoder still sees its errors. Each
+///         shot is conditioned on a probability-one-half branch, so sampling
+///         every combination of the pinned parities with equal shots is
+///         unbiased. Sampling raises if a pinned branch is not a fair coin.
 ///     backend: `"cpu"` or `"gpu"`.
 ///     observable: Observable index counted as a logical error.
 ///     threads: CPU worker count.
@@ -649,6 +672,7 @@ fn parse_file(path: &str) -> PyResult<PyCircuit> {
     expected_observables=None,
     normalize_syndromes=false,
     *,
+    pin_measurements=None,
     backend="cpu",
     observable=0,
     threads=1,
@@ -662,6 +686,7 @@ fn compile(
     expected_detectors: Option<Vec<u8>>,
     expected_observables: Option<Vec<u8>>,
     normalize_syndromes: bool,
+    pin_measurements: Option<Vec<(Vec<usize>, bool)>>,
     backend: &str,
     observable: usize,
     threads: usize,
@@ -676,6 +701,7 @@ fn compile(
         normalize_syndromes,
         expected_detectors.unwrap_or_default(),
         expected_observables.unwrap_or_default(),
+        measurement_parities(pin_measurements),
         backend,
         observable,
         threads,
@@ -692,6 +718,7 @@ fn compile_circuit(
     normalize_syndromes: bool,
     expected_detectors: Vec<u8>,
     expected_observables: Vec<u8>,
+    pin_measurements: Vec<ticit::MeasurementParity>,
     backend: &str,
     observable: usize,
     threads: usize,
@@ -746,6 +773,7 @@ fn compile_circuit(
                     normalize_syndromes,
                     expected_detectors,
                     expected_observables,
+                    pin_measurements,
                     sample_chunk_shots,
                     batch_size,
                     threads,
@@ -755,6 +783,11 @@ fn compile_circuit(
             (Backend::Cpu(Box::new(sampler)), "cpu", postselection)
         }
         "gpu" => {
+            if !pin_measurements.is_empty() {
+                return Err(PyValueError::new_err(
+                    "pinned measurement parities are a CPU-backend feature",
+                ));
+            }
             #[cfg(feature = "gpu")]
             {
                 let reference = if normalize_syndromes {

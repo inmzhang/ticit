@@ -78,6 +78,11 @@ impl Circuit {
 
     /// Computes the circuit's full noiseless detector and observable sample.
     ///
+    /// Where the circuit leaves a measurement free, any outcome gives a valid
+    /// noiseless sample and this picks one. [`SamplerOptions::pin_measurements`]
+    /// is what constrains that choice, and the reference a compiled sampler
+    /// normalizes against obeys its pins.
+    ///
     /// # Errors
     ///
     /// Returns an error if lowering, planning, or execution fails.

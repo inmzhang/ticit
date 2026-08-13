@@ -29,6 +29,7 @@ use crate::exogenous::{
     resample_prepared_exogenous_packed_in_place,
 };
 use crate::factored::FactoredInstructionProgram;
+use crate::pinning::{ForcedBranch, MeasurementParity, plan_pinned_measurements};
 use crate::presampled_expression::{
     PresampledExpressionBlock, PresampledExpressionPlan, evaluate_presampled_expression_block,
     prepare_presampled_expression_plan,
@@ -112,6 +113,26 @@ pub struct SamplerOptions {
     pub expected_detectors: Vec<u8>,
     /// Explicit observable reference bits; empty leaves observable parity raw.
     pub expected_observables: Vec<u8>,
+    /// Measurement parities every shot's noiseless circuit must produce.
+    ///
+    /// Each entry constrains the XOR of a set of measurement records. A parity
+    /// the circuit leaves free is pinned by forcing the last measurement branch
+    /// it depends on; a parity the circuit already determines must match, or
+    /// compilation fails.
+    ///
+    /// The pins act on measurement *branches*, so noise still flips the
+    /// recorded parity and a decoder still sees the errors it must correct;
+    /// what becomes deterministic is the parity the noiseless circuit would
+    /// have produced. Each pinned shot is conditioned on a probability-one-half
+    /// branch outcome, so sampling every combination of the pinned parities
+    /// with equal shots reproduces the unconditioned distribution exactly.
+    /// Sampling fails if a pinned branch turns out not to be a fair coin,
+    /// because such a shot would carry a weight this API does not report.
+    ///
+    /// The reference sample [`Self::normalize_syndromes`] computes obeys the
+    /// same pins, so a pinned observable normalizes against the value the
+    /// pinned shots actually share.
+    pub pin_measurements: Vec<MeasurementParity>,
     /// 0 selects the default (`max(2048, batch_size)` for the batch sampler).
     pub sample_chunk_shots: usize,
     /// 0 selects a batch size based on the circuit's peak active width.
@@ -128,6 +149,7 @@ impl Default for SamplerOptions {
             normalize_syndromes: false,
             expected_detectors: Vec::new(),
             expected_observables: Vec::new(),
+            pin_measurements: Vec::new(),
             sample_chunk_shots: 0,
             batch_size: 0,
             threads: 1,
@@ -333,6 +355,7 @@ fn prepare_expression_plan(
 fn reference_sample_for_program(
     program: &FactoredInstructionProgram,
     observable_records: &[Vec<Vec<i32>>],
+    forced_branches: &[ForcedBranch],
 ) -> Result<ReferenceSample> {
     if program.ndetectors == 0 && observable_records.is_empty() {
         return Ok(ReferenceSample::default());
@@ -355,6 +378,9 @@ fn reference_sample_for_program(
     let mut runtime = BatchFactoredExecutorState::new(program, 1, 1)?;
     runtime.dense_shot_major_active = true;
     runtime.store_detector_records = true;
+    // The reference obeys the same pins as the shots it normalizes, so a pinned
+    // observable normalizes against the value those shots share.
+    runtime.forced_branches = forced_branches.to_vec();
     reset_batch_executor(&mut runtime, program, 1)?;
     execute_batch_in_place_expressions(
         &mut runtime,
@@ -382,7 +408,7 @@ pub(crate) fn circuit_reference_sample(circuit: &Circuit) -> Result<ReferenceSam
     let program = plan_circuit(circuit, &[])?;
     let observable_records =
         logical_records_by_observable(&circuit.observables, circuit.observable_count());
-    reference_sample_for_program(&program, &observable_records)
+    reference_sample_for_program(&program, &observable_records, &[])
 }
 
 fn ceil_div_u64(numerator: u64, denominator: u64) -> Result<u64> {
@@ -512,9 +538,13 @@ impl Sampler {
                 input.observable_includes,
             )));
         }
+        let forced_branches = plan_pinned_measurements(&input.program, &options.pin_measurements)?;
         if options.normalize_syndromes {
-            let reference =
-                reference_sample_for_program(&input.program, &input.observable_records)?;
+            let reference = reference_sample_for_program(
+                &input.program,
+                &input.observable_records,
+                &forced_branches,
+            )?;
             options.expected_detectors = reference.detectors;
             options.expected_observables = reference.observables;
         }
@@ -549,6 +579,7 @@ impl Sampler {
             let mut runtime =
                 BatchFactoredExecutorState::new(&input.program, options.batch_size, 1)?;
             runtime.dense_shot_major_active = true;
+            runtime.forced_branches = forced_branches.clone();
             let mut samples = PackedPresampledExogenous::default();
             prepare_presampled_exogenous_packed(&mut samples, &input.program)?;
             let mut worker = BatchWorker {
@@ -1341,5 +1372,145 @@ mod tests {
             .sample_with_seed(95, 13, false)
             .expect("one chunk uses one worker");
         assert_eq!(capped.active_threads, 1);
+    }
+
+    // ==============================================================================
+    // Pinned measurement parities
+    // ==============================================================================
+
+    /// Parity of `records` in one row of a sampler's unpacked measurement block.
+    fn row_parity(measurements: &[u8], columns: usize, row: usize, records: &[usize]) -> u8 {
+        records.iter().fold(0u8, |acc, &record| {
+            acc ^ measurements[row * columns + record]
+        })
+    }
+
+    #[test]
+    fn pinning_holds_the_parity_in_every_shot() {
+        let circuit = Circuit::from_text("H 0\nH 1\nM 0\nM 1\n").expect("circuit parses");
+        for value in [false, true] {
+            let mut sampler = circuit
+                .compile(SamplerOptions {
+                    pin_measurements: vec![MeasurementParity::new([0, 1], value)],
+                    ..Default::default()
+                })
+                .expect("circuit compiles");
+            let result = sampler.sample_with_seed(512, 9, false).expect("samples");
+            assert_eq!(result.record_rows, 512);
+            let mut individually_random = false;
+            for row in 0..result.record_rows {
+                assert_eq!(
+                    row_parity(&result.measurements, 2, row, &[0, 1]),
+                    u8::from(value)
+                );
+                individually_random |= result.measurements[row * 2] == 1;
+            }
+            assert!(
+                individually_random,
+                "only the parity is pinned; each record stays random"
+            );
+        }
+    }
+
+    /// Pinning acts on the measurement branch, not on the recorded bit, so a
+    /// downstream record that repeats the pinned one still shows the noise.
+    #[test]
+    fn pinning_leaves_noise_on_the_records() {
+        let text = "H 0\nM 0\nX_ERROR(0.25) 0\nM 0\n";
+        let circuit = Circuit::from_text(text).expect("circuit parses");
+        let mut sampler = circuit
+            .compile(SamplerOptions {
+                pin_measurements: vec![MeasurementParity::new([0], true)],
+                ..Default::default()
+            })
+            .expect("circuit compiles");
+        let result = sampler.sample_with_seed(4096, 11, false).expect("samples");
+        let mut flipped = 0usize;
+        for row in 0..result.record_rows {
+            assert_eq!(
+                result.measurements[row * 2],
+                1,
+                "the pinned record is fixed"
+            );
+            flipped += usize::from(result.measurements[row * 2 + 1] != 1);
+        }
+        let rate = flipped as f64 / result.record_rows as f64;
+        assert!(
+            (rate - 0.25).abs() < 0.03,
+            "noise flipped the repeat at {rate}, expected about 0.25"
+        );
+    }
+
+    /// The XOR of those same two records is fixed by the noise alone, so it is
+    /// deterministic in the noiseless circuit and only one value is reachable.
+    #[test]
+    fn a_deterministic_parity_only_accepts_its_own_value() {
+        let circuit = Circuit::from_text("H 0\nM 0\nX_ERROR(0.25) 0\nM 0\n").expect("parses");
+        let pinned = |value| SamplerOptions {
+            pin_measurements: vec![MeasurementParity::new([0, 1], value)],
+            ..Default::default()
+        };
+        circuit
+            .compile(pinned(false))
+            .expect("the noiseless repeat agrees");
+        let error = circuit
+            .compile(pinned(true))
+            .err()
+            .expect("the noiseless repeat cannot disagree");
+        assert!(error.to_string().contains("deterministic"));
+    }
+
+    /// Pinning conditions a shot on its branch outcome. That is only free when
+    /// the branch was a fair coin, so a biased one is refused rather than
+    /// silently reweighting the caller's samples.
+    #[test]
+    fn pinning_a_biased_branch_is_refused() {
+        let circuit = Circuit::from_text("H 0\nT 0\nH 0\nM 0\n").expect("circuit parses");
+        let mut sampler = circuit
+            .compile(SamplerOptions {
+                pin_measurements: vec![MeasurementParity::new([0], true)],
+                ..Default::default()
+            })
+            .expect("circuit compiles");
+        let error = sampler
+            .sample_with_seed(8, 3, false)
+            .expect_err("the branch is biased");
+        assert!(error.to_string().contains("not one half"));
+    }
+
+    /// Sampling both values of a pinned parity with equal shots reproduces the
+    /// unpinned distribution: the two conditionals have weight one half each.
+    #[test]
+    fn pinning_both_values_reproduces_the_unpinned_distribution() {
+        let text = "H 0\nCX 0 1\nM 0\nX_ERROR(0.25) 1\nM 1\nOBSERVABLE_INCLUDE(0) rec[-1]\n";
+        let circuit = Circuit::from_text(text).expect("circuit parses");
+        let shots = 200_000;
+        let mut unpinned = circuit
+            .compile(SamplerOptions::default())
+            .expect("circuit compiles");
+        let free = unpinned
+            .sample_counts_with_seed(2 * shots, 5)
+            .expect("samples");
+        let free_rate = free.counts.logical_error_rate();
+
+        let mut pinned_ones = 0u64;
+        for value in [false, true] {
+            let mut sampler = circuit
+                .compile(SamplerOptions {
+                    pin_measurements: vec![MeasurementParity::new([0], value)],
+                    ..Default::default()
+                })
+                .expect("circuit compiles");
+            pinned_ones += sampler
+                .sample_counts_with_seed(shots, 5)
+                .expect("samples")
+                .counts
+                .logical_errors;
+        }
+        let pinned_rate = pinned_ones as f64 / (2 * shots) as f64;
+        assert!(
+            (pinned_rate - free_rate).abs() < 0.005,
+            "pinned {pinned_rate} vs free {free_rate}"
+        );
     }
 }

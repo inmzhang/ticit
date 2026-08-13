@@ -126,3 +126,16 @@ def test_pauli_and_tableau_public_apis():
     second = sim.measure(1)
     assert first.outcome == second.outcome
     assert second.deterministic
+
+
+def test_pinned_measurement_parities_hold_in_every_shot():
+    circuit = ticit.Circuit("H 0\nH 1\nM 0\nM 1")
+    for value in (False, True):
+        program = circuit.compile(pin_measurements=[([0, 1], value)])
+        records = program.sample(shots=1024, seed=7).measurements
+        expected = np.full(1024, int(value), dtype=np.uint8)
+        assert np.array_equal(records[:, 0] ^ records[:, 1], expected)
+        assert 0 < records[:, 0].mean() < 1, "only the parity is pinned"
+
+    with pytest.raises(ValueError, match="deterministic"):
+        ticit.Circuit("M 0").compile(pin_measurements=[([0], True)])
