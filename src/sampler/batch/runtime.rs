@@ -805,8 +805,8 @@ fn rotate_contiguous_shot(
 ///
 /// Outlined and `#[cold]`: the caller runs once per instruction, and this
 /// body sitting in the hot text region measurably regressed promotion-free
-/// circuits (d05_p0/d07_p0 +1.5-3% cycles) through code layout alone —
-/// their profiles shifted in *unchanged* functions. `cold` moves it to
+/// circuits through code layout alone — their profiles shifted in *unchanged*
+/// functions. `cold` moves it to
 /// `.text.unlikely`; on msc-shaped circuits it runs a few times per block,
 /// so residency there costs nothing measurable.
 #[cold]

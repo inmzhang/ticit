@@ -2352,7 +2352,7 @@ mod circuit_tests {
         paths
     }
 
-    fn parse_corpus(directory: &Path, extension: &str, minimum: usize) {
+    fn parse_corpus(directory: &Path, extension: &str, minimum: usize) -> Vec<Circuit> {
         let paths = corpus(directory, extension);
         assert!(
             paths.len() >= minimum,
@@ -2360,16 +2360,19 @@ mod circuit_tests {
             directory.display(),
             paths.len()
         );
-        for path in &paths {
-            parse_ticit_circuit_file(path)
-                .unwrap_or_else(|error| panic!("{} failed to parse: {error}", path.display()));
-        }
+        paths
+            .iter()
+            .map(|path| {
+                parse_ticit_circuit_file(path)
+                    .unwrap_or_else(|error| panic!("{} failed to parse: {error}", path.display()))
+            })
+            .collect()
     }
 
     #[test]
     fn every_soft_benchmark_circuit_parses() {
         let directory = common::soft_benchmark_circuits();
-        parse_corpus(&directory, "stim", 9);
+        let _ = parse_corpus(&directory, "stim", 9);
         // Spot-check against benchmark/circuit/manifest.json, which records
         // `qubits` and `measurements` per circuit.
         let path = directory.join("msc_d3_inject_cultivate_p1e-3.stim");
@@ -2383,16 +2386,16 @@ mod circuit_tests {
     #[test]
     fn every_ccz_nontels_circuit_parses() {
         let directory = common::ccz_nontels_circuits();
-        parse_corpus(&directory, "clifft", 8);
+        let circuits = parse_corpus(&directory, "clifft", 4);
+        assert!(circuits.iter().all(|circuit| !circuit.detectors.is_empty()));
         // `.clifft` is plain Ticit dialect. Counts derived independently from the
         // file text; the bundle ships no metadata of its own.
-        let path = directory.join("d05_p0.clifft");
+        let path = directory.join("d05_p1e-3.clifft");
         let circuit = parse_ticit_circuit_file(&path).expect("ccz bundle circuit parses");
-        assert_eq!(circuit.nqubits, 835);
-        assert_eq!(circuit.nrecords, 8220);
-        assert_eq!(circuit.nexpvals, 100);
-        // The bundle is detector-free by construction: raw records and EXP_VAL only.
-        assert!(circuit.detectors.is_empty());
-        assert!(circuit.observables.is_empty());
+        assert_eq!(circuit.nqubits, 834);
+        assert_eq!(circuit.nrecords, 8012);
+        assert_eq!(circuit.nexpvals, 28);
+        assert_eq!(circuit.detectors.len(), 6992);
+        assert_eq!(circuit.num_observables(), 0);
     }
 }

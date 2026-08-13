@@ -156,17 +156,26 @@ Parse + plan only. Prints `qubits`, `records`, `detectors`, `instructions`, `max
 ### GPU harness (`GPU_benchmark.py`, `GPU_config.json`)
 Tsim + SymFT only. Fresh child process per case (GPU memory release), `CUDA_VISIBLE_DEVICES` selection. `symft_gpu` config: per-circuit `mode` (`gpu`|`gpu_presample_expressions`), `threads_per_block` (32/64/128), `shots_per_launch`. Passes `cuda=True, cuda_mode, shots_per_launch, threads_per_block, sample_chunk_shots=shots_per_launch`; asserts `backend == "cuda"`.
 
-## 4. `.clifft` circuits — ccz-nontels bundle
+## 4. `.clifft` circuits — original ccz-nontels bundle
 
-`testdata/circuits/ccz/`: 8 files `d{05,07,09,11}_p{0,1e-3}.clifft`, 292 KB – 7.3 MB.
+The initial detector-free snapshot had 8 files
+`d{05,07,09,11}_p{0,1e-3}.clifft`, 292 KB – 7.3 MB.
 
 **No `.clifft` format exists — files are plain Stim-dialect text**, same dialect SOFT parses; both parsers extension-agnostic. `d05_p0.clifft`: ~834 `QUBIT_COORDS` lines, circuit body, 100 trailing `EXP_VAL` lines.
 
 Opcode census `d05_p0.clifft` (3113 lines): QUBIT_COORDS 834, TICK 539, CX 459, RX 269, MX 262, M 255, R 254, EXP_VAL 100, CZ 88, MPP 27, T 8, E 8, CY 4, S 2, MY 2, H 2. `d05_p1e-3` adds DEPOLARIZE2 1202, DEPOLARIZE1 543, Z_ERROR 272, X_ERROR 262. All supported by SOFT parser.
 
-**No DETECTOR, OBSERVABLE_INCLUDE, or REPEAT in any file** (grep-verified). Raw measurement-record + EXP_VAL path only — clean apples-to-apples comparison (benchmark/ suite is not).
+The initial imported snapshot had no `DETECTOR`, `OBSERVABLE_INCLUDE`, or
+`REPEAT` instructions. The fixtures regenerated on 2026-08-13 inline their
+separate decoder companions: detector counts are 6,992 (d05), 18,786 (d07),
+39,312 (d09), and 70,970 (d11), with no observables. They use direct logical-T
+preparation and have 8,012, 20,604, 42,156, and 75,068 measurements,
+respectively. The census and benchmark description in this section are
+historical.
 
-`E` lines = 8 T-proxy source markers, form `E(0.125) Z668 Z703 Z741 Z781 Z820`. `run_benchmark.py:54` rewrites via regex, **requires exactly 8 matches**.
+`E` lines = 8 T-proxy source markers, each on the T corner before its source
+MPP, for example `E(0.125) Z741`. `run_benchmark.py:54` rewrites via regex and
+requires exactly 8 matches.
 
 Runner (`run_benchmark.py`): `--engine symft|clifft`, `--path`, `--shots 2000`, `--batches 3`, `--source-probability 0.0`, `--sample-chunk-shots 2048`, `--unpacked`, `--drop-exp`, `--cpu`, `--monitor-interval 0.02`. 200-shot warmup, 3 timed batches, `median_batch_shots_per_second`; peak RSS from the Linux process-status watchdog; blake2b digest over measurements+expectations for cross-engine agreement. JSON on stdout. `run_all.sh`: 16 one-core processes (clifft CPUs 0–7, symft 8–15), `OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1`; symft d=11/p=1e-3 compile documented non-completing (killed 3192.6 s).
 
@@ -197,4 +206,4 @@ Port-relevant: `clifft.get_num_threads()`/`set_num_threads()` (OpenMP); AGENTS.m
 
 Frontend = ~1400 lines line-oriented parsing; three tricky parts: (1) half-turn → kernel-angle with `SPP` hardcoded exception; (2) CORRELATED_ERROR group accumulation, conditional→absolute conversion, three flush triggers; (3) two-stage detector position remapping (lowering + pending-optimizer prefix preservation). Else mechanical opcode table. Parse errors: untyped strings, no line numbers — free improvement.
 
-Benchmarking: reproduce `symft_rate_bench` output format + attempted-shots/internal-sample_s definition for symft comparison; but a *fair* ticit-vs-symft-vs-clifft comparison should follow the CCZ bundle's raw-parity detector-free methodology (wall-clock both sides, no reference-syndrome normalization, blake2b digest for cross-engine agreement) rather than `benchmark/benchmark.py` (three metric asymmetries).
+Benchmarking: reproduce `symft_rate_bench` output format + attempted-shots/internal-sample_s definition for symft comparison. A fair ticit-vs-symft-vs-clifft comparison must now execute the same detector/observable output contract in every backend and report normalization and postselection explicitly.

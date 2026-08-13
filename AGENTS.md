@@ -34,7 +34,7 @@ Benchmark over a wide variety of circuits, never a narrow subset:
 
 - All circuits in `SOFT/benchmark/circuit/`.
 - All circuits in `testdata/circuits/ccz/`
-  (`d05/d07/d09/d11` × `p0/p1e-3`, `.clifft` format).
+  (`d05/d07/d09/d11` at `p1e-3`, `.clifft` format).
 - Fast profile/optimization loops may use CCZ d05/d07 and skip d09/d11;
   final validation and benchmark reporting still cover the full matrix.
 

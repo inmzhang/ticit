@@ -1026,6 +1026,7 @@ mod tests {
 
     use super::*;
     use crate::circuit::parse_ticit_text;
+    use crate::test_support::ccz_nontels_circuits;
 
     fn sampler_input(text: &str, options: &SamplerOptions) -> SamplingInput {
         let parsed = parse_ticit_text(text).expect("test circuit parses");
@@ -1040,6 +1041,38 @@ mod tests {
             parsed.observables.len(),
             Default::default(),
         )
+    }
+
+    #[test]
+    #[ignore = "slow end-to-end CCZ fixture check"]
+    fn direct_t_fixture_has_deterministic_detectors_without_noise() {
+        let path = ccz_nontels_circuits().join("d05_p1e-3.clifft");
+        let mut text = std::fs::read_to_string(path).expect("reads CCZ fixture");
+        assert_eq!(text.matches("E(0.125)").count(), 8);
+        for (noise, zero) in [
+            ("E(0.125)", "E(0)"),
+            ("DEPOLARIZE1(0.001)", "DEPOLARIZE1(0)"),
+            ("DEPOLARIZE2(0.001)", "DEPOLARIZE2(0)"),
+            ("X_ERROR(0.001)", "X_ERROR(0)"),
+            ("Z_ERROR(0.001)", "Z_ERROR(0)"),
+            ("M(0.001)", "M(0)"),
+            ("MX(0.001)", "MX(0)"),
+            ("MY(0.001)", "MY(0)"),
+        ] {
+            text = text.replace(noise, zero);
+        }
+        let circuit = parse_ticit_text(&text).expect("CCZ fixture parses");
+        let options = SamplerOptions {
+            postselection_mask: vec![1; circuit.detector_count()],
+            normalize_syndromes: true,
+            ..Default::default()
+        };
+        let counts = Sampler::new(&circuit, options)
+            .expect("CCZ fixture compiles")
+            .sample_counts_with_seed(64, 7)
+            .expect("CCZ fixture samples")
+            .counts;
+        assert_eq!(counts.discarded, 0);
     }
 
     /// `test_detectors`: an inverted measurement flags every shot's observable;
