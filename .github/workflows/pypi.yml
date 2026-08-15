@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v10.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: false
       - run: uv build ticit_py --sdist --out-dir dist
@@ -59,7 +59,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: astral-sh/setup-uv@v10.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: false
       - run: uv publish dist/*
