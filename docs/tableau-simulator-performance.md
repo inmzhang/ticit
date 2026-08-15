@@ -56,3 +56,39 @@ The sampler's bit-packed factored execution is substantially faster on both
 circuits. Moving from d3 to d5 reduces tableau throughput by 44.38x and sampler
 throughput by 74.31x, narrowing the sampler's lead from 46.55x to 27.80x. The
 tableau peak rank rises from 16 to 1,024 over the same change.
+
+## PPVM 85-qubit MSD through Python
+
+Measured on 2026-08-16 from ticit commit `b79196ac31e` and PPVM commit
+`661fc66fffe1`, using the circuit from PPVM's
+[magic-state-distillation example](https://queracomputing.github.io/ppvm/examples/msd/).
+Ticit is **5.20x faster** than PPVM with the same scalar Python gate calls and
+**2.07x faster** than PPVM's fused Python path.
+
+| Python path | Median ms/shot | Shots/s | Speedup vs PPVM scalar |
+|---|---:|---:|---:|
+| PPVM scalar | 0.281 | 3,563.4 | 1.00x |
+| PPVM fused | 0.112 | 8,932.6 | 2.51x |
+| ticit scalar | 0.054 | 18,514.5 | **5.20x** |
+
+Each full shot constructs the 85-qubit state, applies the five T gates and all
+Clifford gates, then materializes all 85 measurements. The scalar rows execute
+the same gate sequence one Python call at a time. The fused PPVM row uses target
+lists, `cz_block`, and `measure_many`; ticit does not currently expose equivalent
+bulk procedural methods to Python. PPVM starts each shot by forking an empty
+tableau, while ticit constructs a fresh simulator.
+
+The values are medians of seven interleaved 1,000-shot runs on P-core 0 of the
+same i5-14600KF, using Python 3.12.7 and release wheels built with
+`RUSTFLAGS="-C target-cpu=native"`. Imports, warm-up, and validation are outside
+the timed regions. Before timing, both scalar states and PPVM's fused state had
+32 live terms and matched on 275 Pauli expectations, including 20 nonzero
+weight-four checks.
+
+PPVM's separate `GeneralizedTableauSum` result is intentionally excluded: that
+part of the example adds depolarizing noise, builds a mixed state once, and then
+times sampling only. It is not the same full-circuit-per-shot contract as either
+procedural tableau path.
+
+Re-run with `ticit_py/benchmarks/ppvm_msd.py`; it needs only the two projects'
+existing Python dependencies.
