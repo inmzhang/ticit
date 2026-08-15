@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/inmzhang/ticit/compare/v0.2.3...v0.2.4) - 2026-08-15
+
+### Added
+
+- *(bench)* add PPVM MSD Python comparison
+
+### Other
+
+- *(deps)* update astral-sh/setup-uv action to v10.0.1 ([#19](https://github.com/inmzhang/ticit/pull/19))
+
 ## [0.2.3](https://github.com/inmzhang/ticit/compare/v0.2.2...v0.2.3) - 2026-08-13
 
 ### Added
