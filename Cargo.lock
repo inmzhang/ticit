@@ -93,9 +93,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "binar"
-version = "0.1.3"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30e7aa34a346c1e71f9333135397fe9f355fc8b9a44f327f667932cf0e072516"
+checksum = "c80269d5a1da3be9308ed84e351c98e69f908ac0fc259927cbf780e9c62614cf"
 dependencies = [
  "derive_more",
  "rand 0.10.2",
@@ -926,9 +926,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "paulimer"
-version = "0.2.3"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ca302527f0e6b496cdbe0642a3f4c07a17f7eea8a4c3d2b30505a4d6359d056"
+checksum = "30071cc6e0a7d5ef8ff00de20f0e2a2bcf59aee1cd362fae3ca4b130f4e42aaa"
 dependencies = [
  "binar",
  "derive_more",
